@@ -8,16 +8,10 @@ const cors    = require('cors');
 const app = express();
 
 app.use(cors({
-  origin: [
-    'http://localhost:5500',
-    'http://127.0.0.1:5500',
-    'http://localhost:5501',
-    'http://127.0.0.1:5501',
-    process.env.FRONTEND_URL || '*'
-  ],
+  origin: '*',
   methods: ['GET','POST','PATCH','PUT','DELETE'],
   allowedHeaders: ['Content-Type','Authorization'],
-  credentials: true,
+  credentials: false,
 }));
 app.use(express.json());
 
@@ -26,7 +20,7 @@ app.use('/api',          require('./routes/auth'));
 app.use('/api/usuarios', require('./routes/usuarios'));
 app.use('/api/ventas',   require('./routes/ventas'));
 app.use('/api/frases',   require('./routes/frases'));
-app.use('/api/leads',    require('./routes/leads'));   // ← NUEVO
+app.use('/api/leads',    require('./routes/leads'));
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -39,7 +33,7 @@ app.use((req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 Netcontact API corriendo en http://localhost:${PORT}`);
   console.log(`📋 Endpoints:`);
   console.log(`   POST   /api/login`);
