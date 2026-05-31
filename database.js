@@ -89,6 +89,10 @@ db.exec(`
 const migraciones = [
   `ALTER TABLE usuarios ADD COLUMN permisos TEXT DEFAULT '[]'`,
   `ALTER TABLE ventas   ADD COLUMN asesor_nombre TEXT`,
+  `ALTER TABLE ventas   ADD COLUMN obs_programacion TEXT`,
+  `ALTER TABLE ventas   ADD COLUMN obs_validacion TEXT`,
+  `ALTER TABLE ventas   ADD COLUMN obs_supgrab TEXT`,
+  `ALTER TABLE ventas   ADD COLUMN estado_supgrab TEXT`,
 ];
 for (const sql of migraciones) {
   try { db.exec(sql); } catch(e) { /* columna ya existe, ignorar */ }
