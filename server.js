@@ -4,6 +4,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors    = require('cors');
+const path    = require('path');  // ← AGREGADO
 
 const app = express();
 
@@ -15,7 +16,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Rutas
+// Servir archivos de audio estáticos  ← AGREGADO
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Rutas (sin cambios)
 app.use('/api',          require('./routes/auth'));
 app.use('/api/usuarios', require('./routes/usuarios'));
 app.use('/api/ventas',   require('./routes/ventas'));
@@ -46,6 +50,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   POST   /api/ventas`);
   console.log(`   GET    /api/ventas`);
   console.log(`   PATCH  /api/ventas/:id`);
+  console.log(`   POST   /api/ventas/:id/audio`);  // ← NUEVO
   console.log(`   POST   /api/leads`);
   console.log(`   GET    /api/leads`);
   console.log(`   PATCH  /api/leads/:id`);

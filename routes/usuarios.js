@@ -7,6 +7,9 @@ const bcrypt  = require('bcryptjs');
 const db      = require('../database');
 const auth    = require('../middleware/auth');
 
+// Agregar columna permisos si no existe
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN permisos TEXT DEFAULT '[]'`); } catch(e) {}
+
 const ROLES = ['jefatura','usuarios'];
 
 // Obtener todos
@@ -39,13 +42,14 @@ router.post('/', auth(ROLES), (req, res) => {
 
   res.json({ ok: true, id: result.lastInsertRowid, mensaje: 'Usuario creado' });
 });
-
+  
 // Editar usuario
 router.patch('/:id', auth(ROLES), (req, res) => {
   const { nombre, usuario, cargo, sala, password, permisos } = req.body;
   const u = db.prepare(`SELECT id FROM usuarios WHERE id = ?`).get(req.params.id);
   if (!u) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
 
+  // Verificar usuario único (excluyendo el actual)
   if (usuario) {
     const existe = db.prepare(`SELECT id FROM usuarios WHERE usuario = ? AND id != ?`).get(usuario.toLowerCase(), req.params.id);
     if (existe) return res.status(409).json({ ok: false, mensaje: 'Ese usuario ya existe' });
