@@ -16,6 +16,21 @@ try { db.exec("ALTER TABLE ventas ADD COLUMN estado_grab TEXT DEFAULT 'pendiente
 try { db.exec("ALTER TABLE ventas ADD COLUMN audio_path TEXT"); } catch(e) {}
 try { db.exec("ALTER TABLE ventas ADD COLUMN obs_supgrab TEXT"); } catch(e) {}
 try { db.exec("ALTER TABLE ventas ADD COLUMN estado_supgrab TEXT DEFAULT 'sin_revisar'"); } catch(e) {}
+try { db.exec("ALTER TABLE ventas ADD COLUMN fotos TEXT DEFAULT '[]'"); } catch(e) {}
+
+// Crear tabla de fotos si no existe
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS venta_fotos (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      venta_id    INTEGER NOT NULL REFERENCES ventas(id) ON DELETE CASCADE,
+      nombre      TEXT NOT NULL,
+      ruta        TEXT NOT NULL,
+      mimetype    TEXT DEFAULT 'image/jpeg',
+      created_at  TEXT DEFAULT (datetime('now','localtime'))
+    )
+  `);
+} catch(e) {}
 
 // ===== MULTER =====
 const audioDir = path.join(__dirname, '..', 'uploads', 'audios');
@@ -39,6 +54,29 @@ const upload = multer({
     }
   },
   limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+// Multer para fotos
+const fotosDir = path.join(__dirname, '..', 'uploads', 'fotos');
+if (!fs.existsSync(fotosDir)) fs.mkdirSync(fotosDir, { recursive: true });
+const storageFotos = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, fotosDir),
+  filename: (req, file, cb) => {
+    const ext  = path.extname(file.originalname);
+    const name = 'foto_' + req.params.id + '_' + Date.now() + ext;
+    cb(null, name);
+  },
+});
+const uploadFoto = multer({
+  storage: storageFotos,
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Solo imágenes o PDF'));
+    }
+  },
+  limits: { fileSize: 20 * 1024 * 1024 },
 });
 
 // ===== POST /api/ventas — Crear venta =====
@@ -134,6 +172,46 @@ router.patch('/:id', auth(ROLES_VENTAS), (req, res) => {
   vals.push(req.params.id);
   db.prepare(`UPDATE ventas SET ${campos.join(', ')} WHERE id = ?`).run(...vals);
   res.json({ ok: true, mensaje: 'Venta actualizada' });
+});
+
+// ===== GET /api/ventas/:id/fotos =====
+router.get('/:id/fotos', auth(ROLES_VENTAS), (req, res) => {
+  const fotos = db.prepare('SELECT * FROM venta_fotos WHERE venta_id = ? ORDER BY created_at ASC').all(req.params.id);
+  res.json({ ok: true, data: fotos });
+});
+
+// ===== POST /api/ventas/:id/fotos — subir foto =====
+router.post('/:id/fotos', auth(ROLES_VENTAS), uploadFoto.single('foto'), (req, res) => {
+  const venta = db.prepare('SELECT id FROM ventas WHERE id = ?').get(req.params.id);
+  if (!venta) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
+  if (!req.file)  return res.status(400).json({ ok: false, mensaje: 'No se recibió archivo' });
+
+  const ruta = 'uploads/fotos/' + req.file.filename;
+  db.prepare('INSERT INTO venta_fotos (venta_id, nombre, ruta, mimetype) VALUES (?,?,?,?)')
+    .run(req.params.id, req.file.originalname, ruta, req.file.mimetype);
+
+  res.json({ ok: true, ruta, nombre: req.file.originalname, mensaje: 'Foto guardada' });
+});
+
+// ===== DELETE /api/ventas/:id/fotos/:fotoId =====
+router.delete('/:id/fotos/:fotoId', auth(ROLES_VENTAS), (req, res) => {
+  const foto = db.prepare('SELECT * FROM venta_fotos WHERE id = ? AND venta_id = ?').get(req.params.fotoId, req.params.id);
+  if (!foto) return res.status(404).json({ ok: false, mensaje: 'Foto no encontrada' });
+  // Eliminar archivo físico
+  try {
+    const filePath = path.join(__dirname, '..', foto.ruta);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch(e) {}
+  db.prepare('DELETE FROM venta_fotos WHERE id = ?').run(req.params.fotoId);
+  res.json({ ok: true, mensaje: 'Foto eliminada' });
+});
+
+// ===== DELETE /api/ventas/:id =====
+router.delete('/:id', auth(ROLES_VENTAS), (req, res) => {
+  const venta = db.prepare('SELECT id FROM ventas WHERE id = ?').get(req.params.id);
+  if (!venta) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
+  db.prepare('DELETE FROM ventas WHERE id = ?').run(req.params.id);
+  res.json({ ok: true, mensaje: 'Venta eliminada' });
 });
 
 module.exports = router;
