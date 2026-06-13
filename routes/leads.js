@@ -1,5 +1,5 @@
 /* ================================================
-   ROUTES/LEADS.JS — Base de llamadas
+   ROUTES/LEADS.JS — MySQL
    ================================================ */
 const express = require('express');
 const router  = express.Router();
@@ -9,205 +9,166 @@ const auth    = require('../middleware/auth');
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
 
-/* Fecha actual en zona horaria Peru UTC-5 */
 function fechaPeruHoy() {
   const ahora = new Date();
-  // Offset Peru: UTC-5 = -300 minutos
-  const peruOffset = -5 * 60;
-  const utcMs = ahora.getTime() + ahora.getTimezoneOffset() * 60000;
-  const peruMs = utcMs + peruOffset * 60000;
-  const peru = new Date(peruMs);
-  const y = peru.getFullYear();
-  const m = String(peru.getMonth() + 1).padStart(2, '0');
-  const d = String(peru.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  const peru  = new Date(ahora.getTime() + ahora.getTimezoneOffset()*60000 + (-5*60*60000));
+  return peru.getFullYear()+'-'+String(peru.getMonth()+1).padStart(2,'0')+'-'+String(peru.getDate()).padStart(2,'0');
 }
-
 function horaPeruAhora() {
   const ahora = new Date();
-  const peruOffset = -5 * 60;
-  const utcMs = ahora.getTime() + ahora.getTimezoneOffset() * 60000;
-  const peruMs = utcMs + peruOffset * 60000;
-  const peru = new Date(peruMs);
-  const h = String(peru.getHours()).padStart(2, '0');
-  const min = String(peru.getMinutes()).padStart(2, '0');
-  return `${h}:${min}`;
+  const peru  = new Date(ahora.getTime() + ahora.getTimezoneOffset()*60000 + (-5*60*60000));
+  return String(peru.getHours()).padStart(2,'0')+':'+String(peru.getMinutes()).padStart(2,'0');
 }
 
-try {
-  // Migración: agregar columna obs_asesor si no existe
-  try { db.exec(`ALTER TABLE leads ADD COLUMN obs_asesor TEXT DEFAULT ''`); } catch(e) {}
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS leads (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      campana       TEXT DEFAULT '—',
-      distrito      TEXT DEFAULT '—',
-      n1            TEXT NOT NULL,
-      n2            TEXT,
-      tipif_back    TEXT DEFAULT '',
-      asesor_id     INTEGER REFERENCES usuarios(id),
-      asesor_nombre TEXT,
-      fecha         TEXT NOT NULL,
-      hora_asig     TEXT DEFAULT '',
-      rotaciones    INTEGER DEFAULT 0,
-      sin_asignar   INTEGER DEFAULT 1,
-      tipif_vend    TEXT DEFAULT '',
-      tipif_hora    TEXT DEFAULT '',
-      obs_asesor    TEXT DEFAULT '',
-      historial     TEXT DEFAULT '[]',
-      created_at    TEXT DEFAULT (datetime('now','localtime'))
-    );
-  `);
-} catch(e) {}
-
 // GET /api/leads
-router.get('/', auth(ROLES_ALL), (req, res) => {
-  const { fecha, asesor_id } = req.query;
-  let sql = `SELECT l.*, u.nombre as asesor_nombre_db FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
-  const params = [];
+router.get('/', auth(ROLES_ALL), async (req, res) => {
+  try {
+    const { fecha, asesor_id } = req.query;
+    let sql = `SELECT l.*, u.nombre as asesor_nombre_db FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
+    const params = [];
 
-  if (req.user.cargo === 'asesor') {
-    sql += ` AND l.asesor_id = ?`;
-    params.push(req.user.id);
-  } else if (asesor_id) {
-    sql += ` AND l.asesor_id = ?`;
-    params.push(asesor_id);
+    if (req.user.cargo === 'asesor') {
+      sql += ` AND l.asesor_id = ?`; params.push(req.user.id);
+    } else if (asesor_id) {
+      sql += ` AND l.asesor_id = ?`; params.push(asesor_id);
+    }
+
+    if (fecha) { sql += ` AND l.fecha = ?`; params.push(fecha); }
+    sql += ` ORDER BY l.created_at DESC`;
+
+    const [data] = await db.query(sql, params);
+    res.json({ ok: true, data: data.map(l => ({
+      ...l,
+      historial: (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })()
+    }))});
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener leads' });
   }
-
-  if (fecha) { sql += ` AND l.fecha = ?`; params.push(fecha); }
-  sql += ` ORDER BY l.created_at DESC`;
-
-  const data = db.prepare(sql).all(...params);
-  res.json({ ok: true, data: data.map(l => ({
-    ...l,
-    historial: (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })()
-  }))});
 });
 
 // POST /api/leads
-router.post('/', auth(ROLES_BO), (req, res) => {
-  const leads = Array.isArray(req.body) ? req.body : [req.body];
-  let creados = 0;
-  const stmt = db.prepare(`
-    INSERT INTO leads (campana, distrito, n1, n2, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+router.post('/', auth(ROLES_BO), async (req, res) => {
+  try {
+    const leads     = Array.isArray(req.body) ? req.body : [req.body];
+    const fechaHoy  = fechaPeruHoy();
+    const horaAhora = horaPeruAhora();
+    let creados = 0;
+    const ids = [];
 
-  // Siempre usar fecha Peru del servidor — ignorar la fecha que mande el frontend
-  const fechaHoy = fechaPeruHoy();
-  const horaAhora = horaPeruAhora();
+    for (const l of leads) {
+      if (!l.n1) continue;
+      let asesorId = l.asesor_id || null;
+      let asesorNombre = l.asesor_nombre || l.asesor || '';
 
-  for (const l of leads) {
-    if (!l.n1) continue;
-    let asesorId = l.asesor_id || null;
-    let asesorNombre = l.asesor_nombre || l.asesor || '';
-    if (!asesorId && asesorNombre) {
-      const u = db.prepare(`SELECT id FROM usuarios WHERE nombre = ?`).get(asesorNombre);
-      if (u) asesorId = u.id;
+      if (!asesorId && asesorNombre) {
+        const [uRows] = await db.query(`SELECT id FROM usuarios WHERE nombre = ?`, [asesorNombre]);
+        if (uRows.length) asesorId = uRows[0].id;
+      }
+
+      const horaFinal  = asesorId ? horaAhora : '';
+      const historial  = asesorId
+        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaHoy, motivo: 'Asignacion inicial' }])
+        : '[]';
+
+      const [result] = await db.query(`
+        INSERT INTO leads (campana, distrito, n1, n2, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        l.campana||'', l.distrito||'', l.n1, l.n2||null, l.tipif_back||'',
+        asesorId, asesorNombre, fechaHoy, horaFinal, asesorId?0:1, historial
+      ]);
+      ids.push(result.insertId);
+      creados++;
     }
-    // Usar fecha Peru del servidor, no la del cliente
-    const fechaFinal = fechaHoy;
-    const horaFinal  = asesorId ? horaAhora : '';
-    const historial  = asesorId
-      ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaFinal, motivo: 'Asignacion inicial' }])
-      : '[]';
 
-    stmt.run(
-      l.campana || '—',
-      l.distrito || '—',
-      l.n1,
-      l.n2 || null,
-      l.tipif_back || '',
-      asesorId,
-      asesorNombre,
-      fechaFinal,
-      horaFinal,
-      asesorId ? 0 : 1,
-      historial
-    );
-    creados++;
+    res.json({ ok: true, creados, ids, mensaje: `${creados} lead(s) creado(s)`, fecha_usada: fechaHoy });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al crear leads' });
   }
-
-  const stmt2 = db.prepare('SELECT id FROM leads ORDER BY id DESC LIMIT ?');
-  res.json({
-    ok: true,
-    creados,
-    ids: stmt2.all(creados).map(r => r.id).reverse(),
-    mensaje: `${creados} lead(s) creado(s)`,
-    fecha_usada: fechaHoy  // para debug
-  });
 });
 
 // PATCH /api/leads/:id
-router.patch('/:id', auth(ROLES_BO), (req, res) => {
-  const { asesor_nombre, tipif_back, hora_asig, historial } = req.body;
-  const lead = db.prepare(`SELECT * FROM leads WHERE id = ?`).get(req.params.id);
-  if (!lead) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+router.patch('/:id', auth(ROLES_BO), async (req, res) => {
+  try {
+    const { asesor_nombre, tipif_back, hora_asig, historial } = req.body;
+    const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    const lead = rows[0];
 
-  let asesorId = null;
-  if (asesor_nombre) {
-    const u = db.prepare(`SELECT id FROM usuarios WHERE nombre = ?`).get(asesor_nombre);
-    if (u) asesorId = u.id;
-  }
+    let asesorId = null;
+    if (asesor_nombre) {
+      const [uRows] = await db.query(`SELECT id FROM usuarios WHERE nombre = ?`, [asesor_nombre]);
+      if (uRows.length) asesorId = uRows[0].id;
+    }
 
-  // Usar hora Peru para la asignación
-  const horaReal = hora_asig || horaPeruAhora();
-  const historialJSON = historial ? JSON.stringify(historial) : lead.historial;
+    const horaReal      = hora_asig || horaPeruAhora();
+    const historialJSON = historial ? JSON.stringify(historial) : lead.historial;
 
-  db.prepare(`
-    UPDATE leads
-    SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,
+    await db.query(`
+      UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,
         sin_asignar=?, historial=?, rotaciones=rotaciones+?
-    WHERE id=?
-  `).run(
-    asesorId,
-    asesor_nombre || '',
-    tipif_back || lead.tipif_back,
-    horaReal,
-    asesorId ? 0 : 1,
-    historialJSON,
-    req.body.sumarRotacion ? 1 : 0,
-    req.params.id
-  );
+      WHERE id=?
+    `, [
+      asesorId, asesor_nombre||'', tipif_back||lead.tipif_back,
+      horaReal, asesorId?0:1, historialJSON,
+      req.body.sumarRotacion?1:0, req.params.id
+    ]);
 
-  res.json({ ok: true, mensaje: 'Lead actualizado' });
+    res.json({ ok: true, mensaje: 'Lead actualizado' });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al actualizar lead' });
+  }
 });
 
-// PATCH /api/leads/:id/tipif  — tipificación del vendedor
-router.patch('/:id/tipif', auth(ROLES_ALL), (req, res) => {
-  const { tipif_vend } = req.body;
-  const lead = db.prepare(`SELECT * FROM leads WHERE id = ?`).get(req.params.id);
-  if (!lead) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+// PATCH /api/leads/:id/tipif
+router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
+  try {
+    const { tipif_vend } = req.body;
+    const [rows] = await db.query(`SELECT id FROM leads WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=? WHERE id=?`, [tipif_vend||'', horaPeruAhora(), req.params.id]);
+    res.json({ ok: true, mensaje: 'Tipificación guardada' });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al guardar tipificación' });
+  }
+});
 
-  db.prepare(`UPDATE leads SET tipif_vend=?, tipif_hora=? WHERE id=?`)
-    .run(tipif_vend || '', horaPeruAhora(), req.params.id);
-
-  res.json({ ok: true, mensaje: 'Tipificación guardada' });
+// PATCH /api/leads/:id/obs
+router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
+  try {
+    const { obs } = req.body;
+    const [rows] = await db.query(`SELECT id FROM leads WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    await db.query(`UPDATE leads SET obs_asesor=? WHERE id=?`, [obs||'', req.params.id]);
+    res.json({ ok: true, mensaje: 'Observacion guardada' });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al guardar observación' });
+  }
 });
 
 // DELETE /api/leads/:id
-router.delete('/:id', auth(ROLES_BO), (req, res) => {
-  db.prepare(`DELETE FROM leads WHERE id = ?`).run(req.params.id);
-  res.json({ ok: true, mensaje: 'Lead eliminado' });
+router.delete('/:id', auth(ROLES_BO), async (req, res) => {
+  try {
+    await db.query(`DELETE FROM leads WHERE id = ?`, [req.params.id]);
+    res.json({ ok: true, mensaje: 'Lead eliminado' });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al eliminar lead' });
+  }
 });
 
 // DELETE /api/leads/fecha/:fecha
-router.delete('/fecha/:fecha', auth(ROLES_BO), (req, res) => {
-  const info = db.prepare(`DELETE FROM leads WHERE fecha = ?`).run(req.params.fecha);
-  res.json({ ok: true, eliminados: info.changes });
+router.delete('/fecha/:fecha', auth(ROLES_BO), async (req, res) => {
+  try {
+    const [result] = await db.query(`DELETE FROM leads WHERE fecha = ?`, [req.params.fecha]);
+    res.json({ ok: true, eliminados: result.affectedRows });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al eliminar leads' });
+  }
 });
 
-// PATCH /api/leads/:id/obs — observacion del asesor (DNI, nota)
-router.patch('/:id/obs', auth(ROLES_ALL), (req, res) => {
-  const { obs } = req.body;
-  const lead = db.prepare(`SELECT id FROM leads WHERE id = ?`).get(req.params.id);
-  if (!lead) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
-  db.prepare(`UPDATE leads SET obs_asesor=? WHERE id=?`).run(obs || '', req.params.id);
-  res.json({ ok: true, mensaje: 'Observacion guardada' });
-});
-
-// GET /api/leads/fecha-peru — util para debug
+// GET /api/leads/fecha-peru
 router.get('/fecha-peru', auth(ROLES_ALL), (req, res) => {
   res.json({ ok: true, fecha: fechaPeruHoy(), hora: horaPeruAhora() });
 });

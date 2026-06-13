@@ -1,5 +1,5 @@
 /* ================================================
-   ROUTES/USUARIOS.JS — CRUD de usuarios
+   ROUTES/USUARIOS.JS — MySQL
    ================================================ */
 const express = require('express');
 const router  = express.Router();
@@ -7,81 +7,98 @@ const bcrypt  = require('bcryptjs');
 const db      = require('../database');
 const auth    = require('../middleware/auth');
 
-// Agregar columna permisos si no existe
-try { db.exec(`ALTER TABLE usuarios ADD COLUMN permisos TEXT DEFAULT '[]'`); } catch(e) {}
-
 const ROLES = ['jefatura','usuarios'];
 
-// Obtener todos
-router.get('/', auth(['jefatura','usuarios','backoffice','supervisor']), (req, res) => {
-  const lista = db.prepare(`
-    SELECT id, nombre, usuario, cargo, sala, genero, activo, permisos, created_at
-    FROM usuarios ORDER BY created_at DESC
-  `).all();
-  res.json({ ok: true, data: lista.map(u => ({
-    ...u,
-    permisos: (() => { try { return JSON.parse(u.permisos||'[]'); } catch(e){ return []; } })()
-  }))});
-});
-
-// Crear usuario
-router.post('/', auth(ROLES), (req, res) => {
-  const { nombre, usuario, password, cargo, sala, genero, activo, permisos } = req.body;
-  if (!nombre || !usuario || !password || !cargo)
-    return res.status(400).json({ ok: false, mensaje: 'Campos obligatorios faltantes' });
-
-  const existe = db.prepare(`SELECT id FROM usuarios WHERE usuario = ?`).get(usuario.toLowerCase());
-  if (existe) return res.status(409).json({ ok: false, mensaje: 'Ese usuario ya existe' });
-
-  const hash = bcrypt.hashSync(password, 10);
-  const permisosJSON = JSON.stringify(permisos || []);
-  const result = db.prepare(`
-    INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, activo, permisos)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(nombre, usuario.toLowerCase(), hash, cargo, sala||null, genero||'M', activo!==false?1:0, permisosJSON);
-
-  res.json({ ok: true, id: result.lastInsertRowid, mensaje: 'Usuario creado' });
-});
-  
-// Editar usuario
-router.patch('/:id', auth(ROLES), (req, res) => {
-  const { nombre, usuario, cargo, sala, password, permisos } = req.body;
-  const u = db.prepare(`SELECT id FROM usuarios WHERE id = ?`).get(req.params.id);
-  if (!u) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
-
-  // Verificar usuario único (excluyendo el actual)
-  if (usuario) {
-    const existe = db.prepare(`SELECT id FROM usuarios WHERE usuario = ? AND id != ?`).get(usuario.toLowerCase(), req.params.id);
-    if (existe) return res.status(409).json({ ok: false, mensaje: 'Ese usuario ya existe' });
+// GET todos
+router.get('/', auth(['jefatura','usuarios','backoffice','supervisor']), async (req, res) => {
+  try {
+    const [lista] = await db.query(`
+      SELECT id, nombre, usuario, cargo, sala, genero, activo, permisos, created_at
+      FROM usuarios ORDER BY created_at DESC
+    `);
+    res.json({ ok: true, data: lista.map(u => ({
+      ...u,
+      activo: !!u.activo,
+      permisos: (() => { try { return JSON.parse(u.permisos||'[]'); } catch(e){ return []; } })()
+    }))});
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener usuarios' });
   }
+});
 
-  const permisosJSON = JSON.stringify(permisos || []);
+// POST crear
+router.post('/', auth(ROLES), async (req, res) => {
+  try {
+    const { nombre, usuario, password, cargo, sala, genero, activo, permisos } = req.body;
+    if (!nombre || !usuario || !password || !cargo)
+      return res.status(400).json({ ok: false, mensaje: 'Campos obligatorios faltantes' });
 
-  if (password) {
+    const [existe] = await db.query(`SELECT id FROM usuarios WHERE usuario = ?`, [usuario.toLowerCase()]);
+    if (existe.length) return res.status(409).json({ ok: false, mensaje: 'Ese usuario ya existe' });
+
     const hash = bcrypt.hashSync(password, 10);
-    db.prepare(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, password=?, permisos=? WHERE id=?`)
-      .run(nombre, usuario.toLowerCase(), cargo, sala||null, hash, permisosJSON, req.params.id);
-  } else {
-    db.prepare(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, permisos=? WHERE id=?`)
-      .run(nombre, usuario.toLowerCase(), cargo, sala||null, permisosJSON, req.params.id);
+    const permisosJSON = JSON.stringify(permisos || []);
+    const [result] = await db.query(`
+      INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, activo, permisos)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [nombre, usuario.toLowerCase(), hash, cargo, sala||null, genero||'M', activo!==false?1:0, permisosJSON]);
+
+    res.json({ ok: true, id: result.insertId, mensaje: 'Usuario creado' });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al crear usuario' });
   }
-  res.json({ ok: true, mensaje: 'Usuario actualizado' });
 });
 
-// Activar / Desactivar
-router.patch('/:id/estado', auth(ROLES), (req, res) => {
-  const { activo } = req.body;
-  db.prepare(`UPDATE usuarios SET activo = ? WHERE id = ?`).run(activo ? 1 : 0, req.params.id);
-  res.json({ ok: true, mensaje: activo ? 'Usuario activado' : 'Usuario desactivado' });
+// PATCH editar
+router.patch('/:id', auth(ROLES), async (req, res) => {
+  try {
+    const { nombre, usuario, cargo, sala, password, permisos } = req.body;
+    const [rows] = await db.query(`SELECT id FROM usuarios WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
+
+    if (usuario) {
+      const [existe] = await db.query(`SELECT id FROM usuarios WHERE usuario = ? AND id != ?`, [usuario.toLowerCase(), req.params.id]);
+      if (existe.length) return res.status(409).json({ ok: false, mensaje: 'Ese usuario ya existe' });
+    }
+
+    const permisosJSON = JSON.stringify(permisos || []);
+
+    if (password) {
+      const hash = bcrypt.hashSync(password, 10);
+      await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, password=?, permisos=? WHERE id=?`,
+        [nombre, usuario.toLowerCase(), cargo, sala||null, hash, permisosJSON, req.params.id]);
+    } else {
+      await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, permisos=? WHERE id=?`,
+        [nombre, usuario.toLowerCase(), cargo, sala||null, permisosJSON, req.params.id]);
+    }
+    res.json({ ok: true, mensaje: 'Usuario actualizado' });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al actualizar usuario' });
+  }
 });
 
-// Eliminar usuario
-router.delete('/:id', auth(ROLES), (req, res) => {
-  const u = db.prepare(`SELECT id, usuario FROM usuarios WHERE id = ?`).get(req.params.id);
-  if (!u) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
-  if (u.usuario === 'admin') return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar al administrador' });
-  db.prepare(`DELETE FROM usuarios WHERE id = ?`).run(req.params.id);
-  res.json({ ok: true, mensaje: 'Usuario eliminado' });
+// PATCH activar/desactivar
+router.patch('/:id/estado', auth(ROLES), async (req, res) => {
+  try {
+    const { activo } = req.body;
+    await db.query(`UPDATE usuarios SET activo = ? WHERE id = ?`, [activo ? 1 : 0, req.params.id]);
+    res.json({ ok: true, mensaje: activo ? 'Usuario activado' : 'Usuario desactivado' });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al cambiar estado' });
+  }
+});
+
+// DELETE
+router.delete('/:id', auth(ROLES), async (req, res) => {
+  try {
+    const [rows] = await db.query(`SELECT id, usuario FROM usuarios WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
+    if (rows[0].usuario === 'admin') return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar al administrador' });
+    await db.query(`DELETE FROM usuarios WHERE id = ?`, [req.params.id]);
+    res.json({ ok: true, mensaje: 'Usuario eliminado' });
+  } catch(e) {
+    res.status(500).json({ ok: false, mensaje: 'Error al eliminar usuario' });
+  }
 });
 
 module.exports = router;

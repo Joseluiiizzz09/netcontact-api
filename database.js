@@ -1,112 +1,151 @@
 /* ================================================
-   DATABASE.JS — SQLite con better-sqlite3
+   DATABASE.JS — MySQL con mysql2
    ================================================ */
-const Database = require('better-sqlite3');
-const bcrypt   = require('bcryptjs');
+require('dotenv').config();
+const mysql  = require('mysql2/promise');
+const bcrypt = require('bcryptjs');
 
-const db = new Database(process.env.DB_PATH || './database.sqlite');
+const pool = mysql.createPool({
+  host:     process.env.DB_HOST     || 'localhost',
+  port:     process.env.DB_PORT     || 3306,
+  user:     process.env.DB_USER     || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME     || 'netcontact',
+  waitForConnections: true,
+  connectionLimit:    10,
+  timezone: '-05:00', // Peru UTC-5
+});
 
-db.pragma('journal_mode = WAL');
+/* ── CREAR TABLAS ── */
+async function initDB() {
+  const conn = await pool.getConnection();
+  try {
 
-// ── CREAR TABLAS ──
-db.exec(`
-  CREATE TABLE IF NOT EXISTS usuarios (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    nombre      TEXT NOT NULL,
-    usuario     TEXT UNIQUE NOT NULL,
-    password    TEXT NOT NULL,
-    cargo       TEXT NOT NULL,
-    sala        TEXT,
-    genero      TEXT DEFAULT 'M',
-    activo      INTEGER DEFAULT 1,
-    permisos    TEXT DEFAULT '[]',
-    created_at  TEXT DEFAULT (datetime('now','localtime'))
-  );
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS usuarios (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        nombre     VARCHAR(150) NOT NULL,
+        usuario    VARCHAR(100) UNIQUE NOT NULL,
+        password   VARCHAR(255) NOT NULL,
+        cargo      VARCHAR(50)  NOT NULL,
+        sala       VARCHAR(50),
+        genero     VARCHAR(1)   DEFAULT 'M',
+        activo     TINYINT(1)   DEFAULT 1,
+        permisos   TEXT,
+        created_at DATETIME     DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
 
-  CREATE TABLE IF NOT EXISTS ventas (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    asesor_id     INTEGER REFERENCES usuarios(id),
-    asesor_nombre TEXT,
-    tipo_doc      TEXT DEFAULT 'DNI',
-    dni           TEXT,
-    nombre        TEXT,
-    email         TEXT,
-    telefono1     TEXT,
-    telefono2     TEXT,
-    departamento  TEXT,
-    provincia     TEXT,
-    distrito      TEXT,
-    direccion     TEXT,
-    coordenadas   TEXT,
-    fecha_nac     TEXT,
-    lugar_nac     TEXT,
-    padre         TEXT,
-    madre         TEXT,
-    predio        TEXT,
-    cuota_inst    TEXT,
-    claro_hogar   TEXT,
-    tecnologia    TEXT,
-    paquete       TEXT,
-    full_claro    TEXT,
-    cant_decos    INTEGER DEFAULT 0,
-    cant_mesh     INTEGER DEFAULT 0,
-    plano         TEXT,
-    estado        TEXT DEFAULT 'VENTA',
-    obs_backoffice TEXT,
-    observacion   TEXT,
-    created_at    TEXT DEFAULT (datetime('now','localtime'))
-  );
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS ventas (
+        id               INT AUTO_INCREMENT PRIMARY KEY,
+        asesor_id        INT,
+        asesor_nombre    VARCHAR(150),
+        tipo_doc         VARCHAR(10)  DEFAULT 'DNI',
+        dni              VARCHAR(20),
+        nombre           VARCHAR(150),
+        email            VARCHAR(150),
+        telefono1        VARCHAR(20),
+        telefono2        VARCHAR(20),
+        departamento     VARCHAR(100),
+        provincia        VARCHAR(100),
+        distrito         VARCHAR(100),
+        direccion        TEXT,
+        coordenadas      VARCHAR(100),
+        fecha_nac        VARCHAR(20),
+        lugar_nac        VARCHAR(150),
+        padre            VARCHAR(150),
+        madre            VARCHAR(150),
+        predio           VARCHAR(100),
+        cuota_inst       VARCHAR(50),
+        claro_hogar      VARCHAR(100),
+        tecnologia       VARCHAR(50),
+        paquete          VARCHAR(200),
+        full_claro       VARCHAR(10),
+        cant_decos       INT          DEFAULT 0,
+        cant_mesh        INT          DEFAULT 0,
+        plano            VARCHAR(100),
+        estado           VARCHAR(50)  DEFAULT 'VENTA',
+        obs_backoffice   TEXT,
+        observacion      TEXT,
+        obs_programacion TEXT,
+        obs_validacion   TEXT,
+        obs_supgrab      TEXT,
+        estado_supgrab   VARCHAR(50),
+        estado_grab      VARCHAR(50)  DEFAULT 'pendiente',
+        audio_path       VARCHAR(255),
+        fotos            TEXT,
+        created_at       DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (asesor_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
 
-  CREATE TABLE IF NOT EXISTS frases (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    texto         TEXT NOT NULL,
-    supervisor_id INTEGER REFERENCES usuarios(id),
-    sala          TEXT,
-    created_at    TEXT DEFAULT (datetime('now','localtime'))
-  );
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS venta_fotos (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        venta_id   INT NOT NULL,
+        nombre     VARCHAR(255) NOT NULL,
+        ruta       VARCHAR(255) NOT NULL,
+        mimetype   VARCHAR(100) DEFAULT 'image/jpeg',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (venta_id) REFERENCES ventas(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
 
-  CREATE TABLE IF NOT EXISTS leads (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    campana       TEXT DEFAULT '—',
-    distrito      TEXT DEFAULT '—',
-    n1            TEXT NOT NULL,
-    n2            TEXT,
-    tipif_back    TEXT DEFAULT '',
-    asesor_id     INTEGER REFERENCES usuarios(id),
-    asesor_nombre TEXT,
-    fecha         TEXT NOT NULL,
-    hora_asig     TEXT DEFAULT '',
-    rotaciones    INTEGER DEFAULT 0,
-    sin_asignar   INTEGER DEFAULT 1,
-    tipif_vend    TEXT DEFAULT '',
-    tipif_hora    TEXT DEFAULT '',
-    historial     TEXT DEFAULT '[]',
-    created_at    TEXT DEFAULT (datetime('now','localtime'))
-  );
-`);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS frases (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        texto         TEXT NOT NULL,
+        supervisor_id INT,
+        sala          VARCHAR(50),
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (supervisor_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
 
-// Migraciones seguras — agregan columnas si no existen
-const migraciones = [
-  `ALTER TABLE usuarios ADD COLUMN permisos TEXT DEFAULT '[]'`,
-  `ALTER TABLE ventas   ADD COLUMN asesor_nombre TEXT`,
-  `ALTER TABLE ventas   ADD COLUMN obs_programacion TEXT`,
-  `ALTER TABLE ventas   ADD COLUMN obs_validacion TEXT`,
-  `ALTER TABLE ventas   ADD COLUMN obs_supgrab TEXT`,
-  `ALTER TABLE ventas   ADD COLUMN estado_supgrab TEXT`,
-];
-for (const sql of migraciones) {
-  try { db.exec(sql); } catch(e) { /* columna ya existe, ignorar */ }
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS leads (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        campana       VARCHAR(100) DEFAULT '',
+        distrito      VARCHAR(100) DEFAULT '',
+        n1            VARCHAR(20)  NOT NULL,
+        n2            VARCHAR(20),
+        tipif_back    VARCHAR(100) DEFAULT '',
+        asesor_id     INT,
+        asesor_nombre VARCHAR(150),
+        fecha         DATE         NOT NULL,
+        hora_asig     VARCHAR(10)  DEFAULT '',
+        rotaciones    INT          DEFAULT 0,
+        sin_asignar   TINYINT(1)   DEFAULT 1,
+        tipif_vend    VARCHAR(100) DEFAULT '',
+        tipif_hora    VARCHAR(10)  DEFAULT '',
+        obs_asesor    TEXT,
+        historial     TEXT,
+        created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (asesor_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
+    // ── USUARIO ADMIN INICIAL ──
+    const [rows] = await conn.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);
+    if (!rows.length) {
+      const hash = bcrypt.hashSync('admin123', 10);
+      await conn.query(`
+        INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, permisos)
+        VALUES ('Administrador', 'admin', ?, 'jefatura', 'SALA 1', 'M', '[]')
+      `, [hash]);
+      console.log('✅ Usuario admin creado (admin / admin123)');
+    }
+
+    console.log('✅ Base de datos MySQL iniciada correctamente');
+  } finally {
+    conn.release();
+  }
 }
 
-// ── USUARIO ADMIN INICIAL ──
-const existe = db.prepare(`SELECT id FROM usuarios WHERE usuario = 'admin'`).get();
-if (!existe) {
-  const hash = bcrypt.hashSync('admin123', 10);
-  db.prepare(`
-    INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, permisos)
-    VALUES ('Administrador', 'admin', ?, 'jefatura', 'SALA 1', 'M', '[]')
-  `).run(hash);
-  console.log('✅ Usuario admin creado (admin / admin123)');
-}
+initDB().catch(err => {
+  console.error('❌ Error iniciando base de datos:', err.message);
+  process.exit(1);
+});
 
-module.exports = db;
+module.exports = pool;
