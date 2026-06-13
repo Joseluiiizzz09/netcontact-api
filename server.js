@@ -1,58 +1,26 @@
-/* ================================================
-   SERVER.JS — Servidor principal Netcontact
-   ================================================ */
-require('dotenv').config();
+﻿require('dotenv').config();
 const express = require('express');
-const cors    = require('cors');
-const path    = require('path');  // ← AGREGADO
-
+const cors = require('cors');
+const path = require('path');
 const app = express();
-
-app.use(cors({
-  origin: '*',
-  methods: ['GET','POST','PATCH','PUT','DELETE'],
-  allowedHeaders: ['Content-Type','Authorization'],
-  credentials: false,
-}));
-app.use(express.json());
-
-// Servir archivos de audio estáticos  ← AGREGADO
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// Rutas (sin cambios)
-app.use('/api',          require('./routes/auth'));
+app.use(express.json({ limit: '5mb' }));
+const FRONTEND_URL = process.env.FRONTEND_URL || '*';
+app.use(cors({ origin: FRONTEND_URL === '*' ? '*' : FRONTEND_URL.split(',').map(u=>u.trim()), methods:['GET','POST','PATCH','PUT','DELETE'], allowedHeaders:['Content-Type','Authorization'], credentials:false }));
+const rateLimit = require('express-rate-limit');
+app.use('/api/login', rateLimit({ windowMs:15*60*1000, max:20, message:{ok:false,mensaje:'Demasiados intentos. Espera 15 minutos.'}, standardHeaders:true, legacyHeaders:false }));
+const helmet = require('helmet');
+app.use(helmet({ contentSecurityPolicy:false, crossOriginEmbedderPolicy:false }));
+app.use('/uploads', express.static(path.join(__dirname,'uploads')));
+app.use('/api', require('./routes/auth'));
 app.use('/api/usuarios', require('./routes/usuarios'));
-app.use('/api/ventas',   require('./routes/ventas'));
-app.use('/api/frases',   require('./routes/frases'));
-app.use('/api/leads',    require('./routes/leads'));
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, mensaje: 'Netcontact API corriendo', fecha: new Date().toISOString() });
-});
-
-// 404
-app.use((req, res) => {
-  res.status(404).json({ ok: false, mensaje: 'Ruta no encontrada' });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🚀 Netcontact API corriendo en http://localhost:${PORT}`);
-  console.log(`📋 Endpoints:`);
-  console.log(`   POST   /api/login`);
-  console.log(`   GET    /api/verificar`);
-  console.log(`   GET    /api/usuarios`);
-  console.log(`   POST   /api/usuarios`);
-  console.log(`   PATCH  /api/usuarios/:id`);
-  console.log(`   PATCH  /api/usuarios/:id/estado`);
-  console.log(`   DELETE /api/usuarios/:id`);
-  console.log(`   POST   /api/ventas`);
-  console.log(`   GET    /api/ventas`);
-  console.log(`   PATCH  /api/ventas/:id`);
-  console.log(`   POST   /api/ventas/:id/audio`);  // ← NUEVO
-  console.log(`   POST   /api/leads`);
-  console.log(`   GET    /api/leads`);
-  console.log(`   PATCH  /api/leads/:id`);
-  console.log(`   DELETE /api/leads/:id\n`);
-});
+app.use('/api/ventas', require('./routes/ventas'));
+app.use('/api/frases', require('./routes/frases'));
+app.use('/api/leads', require('./routes/leads'));
+const db = require('./database');
+app.get('/api/health', async(req,res)=>{ try{ await db.query('SELECT 1'); res.json({ok:true,mensaje:'API corriendo',db:'conectada'}); }catch(e){ res.status(500).json({ok:false,mensaje:'BD desconectada'}); }});
+app.use((req,res)=>res.status(404).json({ok:false,mensaje:'Ruta no encontrada'}));
+app.use((err,req,res,next)=>{ console.error('['+new Date().toISOString()+'] ERROR:',err.message); if(err.type==='entity.too.large') return res.status(413).json({ok:false,mensaje:'Archivo demasiado grande'}); res.status(500).json({ok:false,mensaje:'Error interno'}); });
+process.on('uncaughtException',(err)=>console.error('[UNCAUGHT]',err.message));
+process.on('unhandledRejection',(r)=>console.error('[UNHANDLED]',r));
+const PORT=process.env.PORT||3000;
+app.listen(PORT,'0.0.0.0',()=>console.log('Netcontact API puerto '+PORT));

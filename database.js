@@ -1,5 +1,5 @@
-/* ================================================
-   DATABASE.JS — MySQL con mysql2
+﻿/* ================================================
+   DATABASE.JS â€” MySQL con mysql2
    ================================================ */
 require('dotenv').config();
 const mysql  = require('mysql2/promise');
@@ -12,11 +12,11 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME     || 'netcontact',
   waitForConnections: true,
-  connectionLimit:    10,
+  connectionLimit:    50,
   timezone: '-05:00', // Peru UTC-5
 });
 
-/* ── CREAR TABLAS ── */
+/* â”€â”€ CREAR TABLAS â”€â”€ */
 async function initDB() {
   const conn = await pool.getConnection();
   try {
@@ -126,7 +126,7 @@ async function initDB() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
-    // ── USUARIO ADMIN INICIAL ──
+    // â”€â”€ USUARIO ADMIN INICIAL â”€â”€
     const [rows] = await conn.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);
     if (!rows.length) {
       const hash = bcrypt.hashSync('admin123', 10);
@@ -134,17 +134,17 @@ async function initDB() {
         INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, permisos)
         VALUES ('Administrador', 'admin', ?, 'jefatura', 'SALA 1', 'M', '[]')
       `, [hash]);
-      console.log('✅ Usuario admin creado (admin / admin123)');
+      console.log('âœ… Usuario admin creado (admin / admin123)');
     }
 
-    console.log('✅ Base de datos MySQL iniciada correctamente');
+    console.log('âœ… Base de datos MySQL iniciada correctamente');
   } finally {
     conn.release();
   }
 }
 
 initDB().catch(err => {
-  console.error('❌ Error iniciando base de datos:', err.message);
+  console.error('âŒ Error iniciando base de datos:', err.message);
   process.exit(1);
 });
 

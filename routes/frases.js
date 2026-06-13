@@ -1,12 +1,12 @@
-/* ================================================
-   ROUTES/FRASES.JS — MySQL
+﻿/* ================================================
+   ROUTES/FRASES.JS â€” MySQL
    ================================================ */
 const express = require('express');
 const router  = express.Router();
 const db      = require('../database');
 const auth    = require('../middleware/auth');
 
-// POST — publicar frase
+// POST â€” publicar frase
 router.post('/', auth(['supervisor','jefatura']), async (req, res) => {
   try {
     const { texto, sala } = req.body;
@@ -21,11 +21,11 @@ router.post('/', auth(['supervisor','jefatura']), async (req, res) => {
   }
 });
 
-// GET — frases de hoy
+// GET â€” frases de hoy
 router.get('/', auth(['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura']), async (req, res) => {
   try {
     const { sala } = req.query;
-    const hoy = new Date().toISOString().split('T')[0];
+    const ahora=new Date();const peru=new Date(ahora.getTime()+ahora.getTimezoneOffset()*60000+(-5*60*60000));const hoy=peru.getFullYear()+'-'+String(peru.getMonth()+1).padStart(2,'0')+'-'+String(peru.getDate()).padStart(2,'0');
     let sql = `
       SELECT f.*, u.nombre as supervisor_nombre
       FROM frases f
