@@ -126,7 +126,25 @@ async function initDB() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
-    // â”€â”€ USUARIO ADMIN INICIAL â”€â”€
+    // -- INDICES PARA RENDIMIENTO (150+ usuarios) --
+    const indices = [
+      'CREATE INDEX IF NOT EXISTS idx_ventas_created ON ventas(created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_ventas_asesor ON ventas(asesor_id)',
+      'CREATE INDEX IF NOT EXISTS idx_ventas_estado ON ventas(estado)',
+      'CREATE INDEX IF NOT EXISTS idx_ventas_dni ON ventas(dni)',
+      'CREATE INDEX IF NOT EXISTS idx_ventas_grab ON ventas(estado_grab)',
+      'CREATE INDEX IF NOT EXISTS idx_ventas_supgrab ON ventas(estado_supgrab)',
+      'CREATE INDEX IF NOT EXISTS idx_leads_fecha ON leads(fecha)',
+      'CREATE INDEX IF NOT EXISTS idx_leads_asesor ON leads(asesor_id)',
+      'CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_leads_n1 ON leads(n1)',
+      'CREATE INDEX IF NOT EXISTS idx_frases_created ON frases(created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_fotos_venta ON venta_fotos(venta_id)',
+    ];
+    for (const idx of indices) { await conn.query(idx).catch(() => {}); }
+    console.log('Indices de rendimiento verificados');
+
+    // -- USUARIO ADMIN INICIAL --
     const [rows] = await conn.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);
     if (!rows.length) {
       const hash = bcrypt.hashSync('admin123', 10);
@@ -149,3 +167,4 @@ initDB().catch(err => {
 });
 
 module.exports = pool;
+
