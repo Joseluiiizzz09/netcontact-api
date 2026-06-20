@@ -11,6 +11,7 @@ router.post('/', auth(['supervisor','jefatura']), async (req, res) => {
   try {
     const { texto, sala } = req.body;
     if (!texto?.trim()) return res.status(400).json({ ok:false, mensaje:'El texto es obligatorio' });
+    if (texto.trim().length > 1000) return res.status(400).json({ ok:false, mensaje:'La frase no puede superar 1000 caracteres' });
     const [result] = await db.query(
       `INSERT INTO frases (texto, supervisor_id, sala) VALUES (?, ?, ?)`,
       [texto.trim(), req.user.id, sala||null]

@@ -5,6 +5,7 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../database');
 const auth    = require('../middleware/auth');
+const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('../middleware/validar');
 
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
@@ -24,6 +25,10 @@ function horaPeruAhora() {
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
     const { fecha, asesor_id } = req.query;
+
+    const errGet = validar([errorFecha(fecha, 'fecha')]);
+    if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
+
     let sql = `SELECT l.*, u.nombre as asesor_nombre_db FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
     const params = [];
 
@@ -103,6 +108,14 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
 router.patch('/:id', auth(ROLES_BO), async (req, res) => {
   try {
     const { asesor_nombre, tipif_back, hora_asig, historial } = req.body;
+
+    const errores = validar([
+      errorHora(hora_asig, 'hora_asig'),
+      errorHistorial(historial),
+      errorTexto(tipif_back, 'tipif_back', { max: 200 }),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+
     const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     const lead = rows[0];
@@ -137,6 +150,8 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
 router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
   try {
     const { tipif_vend } = req.body;
+    if (tipif_vend && String(tipif_vend).length > 200)
+      return res.status(400).json({ ok: false, mensaje: 'tipif_vend no puede superar 200 caracteres' });
     const [rows] = await db.query(`SELECT id, asesor_id FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id)
@@ -152,6 +167,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
 router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
   try {
     const { obs } = req.body;
+    if (obs && String(obs).length > 2000)
+      return res.status(400).json({ ok: false, mensaje: 'obs_asesor no puede superar 2000 caracteres' });
     const [rows] = await db.query(`SELECT id, asesor_id FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id)

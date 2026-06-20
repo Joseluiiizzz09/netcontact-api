@@ -5,8 +5,11 @@ const auth     = require('../middleware/auth');
 const multer   = require('multer');
 const path     = require('path');
 const fs       = require('fs');
+const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositivo, errorId, errorEnum, TIPO_DOC_OK } = require('../middleware/validar');
 
-const ROLES_VENTAS = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
+const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
+const ESTADOS_GRAB_OK    = ['pendiente','grabado','observado','revisado'];
+const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado'];
 const ESTADOS_VALIDOS_POST  = ['VENTA'];
 const ESTADOS_VALIDOS_PATCH = [
   'VENTA','GRABADO','APROBADO','VALIDADO','EN_EJECUCION',
@@ -82,8 +85,19 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
   try {
     const v = req.body;
 
-    if (!v.nombre || !v.dni)
-      return res.status(400).json({ ok: false, mensaje: 'Nombre y DNI son obligatorios' });
+    const errores = validar([
+      errorTexto(v.nombre,  'nombre',  { requerido: true, max: 150 }),
+      errorTexto(v.dni,     'dni',     { requerido: true }),
+      errorDni(v.dni, v.tipoDoc || 'DNI'),
+      errorEmail(v.email),
+      errorEnum(v.tipoDoc, 'tipoDoc', TIPO_DOC_OK),
+      errorTexto(v.telefono1, 'telefono1', { max: 20 }),
+      errorTexto(v.telefono2, 'telefono2', { max: 20 }),
+      errorFecha(v.fechaNac, 'fechaNac'),
+      errorEnteroPositivo(v.cantDecos, 'cantDecos', { max: 10 }),
+      errorEnteroPositivo(v.cantMesh,  'cantMesh',  { max: 10 }),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0], errores });
 
     const estadoFinal = (v.estado || 'VENTA').toUpperCase();
     if (!ESTADOS_VALIDOS_POST.includes(estadoFinal))
@@ -119,6 +133,14 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
 router.get('/', auth(ROLES_VENTAS), async (req, res) => {
   try {
     const { dni, estado, desde, hasta, asesor_id, programacion } = req.query;
+
+    const errores = validar([
+      errorFecha(desde, 'desde'),
+      errorFecha(hasta, 'hasta'),
+      asesor_id ? errorId(asesor_id, 'asesor_id') : null,
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+
     let sql = `SELECT v.*, u.nombre as asesor_nombre, u.sala FROM ventas v LEFT JOIN usuarios u ON v.asesor_id = u.id WHERE 1=1`;
     const params = [];
 
@@ -201,6 +223,20 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
 
     if (estado !== undefined && !ESTADOS_VALIDOS_PATCH.includes(estado.toUpperCase()))
       return res.status(400).json({ ok: false, mensaje: 'Estado inválido.' });
+
+    if (estado_grab !== undefined && !ESTADOS_GRAB_OK.includes(String(estado_grab).toLowerCase()))
+      return res.status(400).json({ ok: false, mensaje: 'estado_grab inválido' });
+    if (estado_supgrab !== undefined && !ESTADOS_SUPGRAB_OK.includes(String(estado_supgrab).toLowerCase()))
+      return res.status(400).json({ ok: false, mensaje: 'estado_supgrab inválido' });
+
+    const errObs = validar([
+      errorTexto(obs_backoffice,   'obs_backoffice',   { max: 1000 }),
+      errorTexto(observacion,      'observacion',      { max: 1000 }),
+      errorTexto(obs_programacion, 'obs_programacion', { max: 1000 }),
+      errorTexto(obs_validacion,   'obs_validacion',   { max: 1000 }),
+      errorTexto(obs_supgrab,      'obs_supgrab',      { max: 1000 }),
+    ]);
+    if (errObs) return res.status(400).json({ ok: false, mensaje: errObs[0] });
 
     const campos = [], vals = [];
     if (estado           !== undefined) { campos.push('estado = ?');           vals.push(estado.toUpperCase()); }

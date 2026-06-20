@@ -6,6 +6,7 @@ const router  = express.Router();
 const bcrypt  = require('bcryptjs');
 const db      = require('../database');
 const auth    = require('../middleware/auth');
+const { validar, errorTexto, errorEnum, errorPermisos, GENERO_OK } = require('../middleware/validar');
 
 const ROLES = ['jefatura','usuarios'];
 const CARGOS_VALIDOS = ['jefatura','usuarios','supervisor','backoffice','asesor','validacion','grabaciones','seguimiento','programacion','supgrabaciones'];
@@ -34,6 +35,16 @@ router.post('/', auth(ROLES), async (req, res) => {
     if (!nombre || !usuario || !password || !cargo)
       return res.status(400).json({ ok: false, mensaje: 'Campos obligatorios faltantes' });
 
+    const errores = validar([
+      errorTexto(nombre,   'nombre',   { requerido: true, max: 150 }),
+      errorTexto(usuario,  'usuario',  { requerido: true, max: 100 }),
+      errorTexto(password, 'password', { requerido: true, max: 100 }),
+      (password && String(password).length < 6) ? 'password debe tener al menos 6 caracteres' : null,
+      errorEnum(genero, 'genero', GENERO_OK),
+      errorPermisos(permisos),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0], errores });
+
     if (!CARGOS_VALIDOS.includes(cargo))
       return res.status(400).json({ ok: false, mensaje: 'Cargo inválido' });
 
@@ -61,6 +72,16 @@ router.post('/', auth(ROLES), async (req, res) => {
 router.patch('/:id', auth(ROLES), async (req, res) => {
   try {
     const { nombre, usuario, cargo, sala, password, permisos } = req.body;
+
+    const errores = validar([
+      errorTexto(nombre,  'nombre',  { requerido: true, max: 150 }),
+      errorTexto(usuario, 'usuario', { requerido: true, max: 100 }),
+      errorTexto(password, 'password', { max: 100 }),
+      (password && String(password).length < 6) ? 'password debe tener al menos 6 caracteres' : null,
+      errorPermisos(permisos),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0], errores });
+
     const [rows] = await db.query(`SELECT id, cargo FROM usuarios WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
 
