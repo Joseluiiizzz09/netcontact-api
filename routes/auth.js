@@ -44,16 +44,8 @@ router.post('/login', async (req, res) => {
   }
 });
 
-router.get('/verificar', (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ ok: false });
-  const token = authHeader.split(' ')[1];
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    res.json({ ok: true, usuario: decoded });
-  } catch(e) {
-    res.status(401).json({ ok: false, mensaje: 'Token expirado o inválido' });
-  }
+router.get('/verificar', require('../middleware/auth')([]), (req, res) => {
+  res.json({ ok: true, usuario: req.user });
 });
 
 module.exports = router;

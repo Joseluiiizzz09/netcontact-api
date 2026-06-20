@@ -8,6 +8,7 @@ const db      = require('../database');
 const auth    = require('../middleware/auth');
 
 const ROLES = ['jefatura','usuarios'];
+const CARGOS_VALIDOS = ['jefatura','usuarios','supervisor','backoffice','asesor','validacion','grabaciones','seguimiento','programacion','supgrabaciones'];
 
 // GET todos
 router.get('/', auth(['jefatura','usuarios','backoffice','supervisor']), async (req, res) => {
@@ -33,6 +34,13 @@ router.post('/', auth(ROLES), async (req, res) => {
     if (!nombre || !usuario || !password || !cargo)
       return res.status(400).json({ ok: false, mensaje: 'Campos obligatorios faltantes' });
 
+    if (!CARGOS_VALIDOS.includes(cargo))
+      return res.status(400).json({ ok: false, mensaje: 'Cargo inválido' });
+
+    // Solo jefatura puede crear usuarios con cargo elevado
+    if (cargo === 'jefatura' && req.user.cargo !== 'jefatura')
+      return res.status(403).json({ ok: false, mensaje: 'Solo jefatura puede crear administradores' });
+
     const [existe] = await db.query(`SELECT id FROM usuarios WHERE usuario = ?`, [usuario.toLowerCase()]);
     if (existe.length) return res.status(409).json({ ok: false, mensaje: 'Ese usuario ya existe' });
 
@@ -53,23 +61,41 @@ router.post('/', auth(ROLES), async (req, res) => {
 router.patch('/:id', auth(ROLES), async (req, res) => {
   try {
     const { nombre, usuario, cargo, sala, password, permisos } = req.body;
-    const [rows] = await db.query(`SELECT id FROM usuarios WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, cargo FROM usuarios WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
+
+    // Solo jefatura puede cambiar el cargo o los permisos de un usuario
+    if ((cargo !== undefined && cargo !== rows[0].cargo) || permisos !== undefined) {
+      if (req.user.cargo !== 'jefatura') {
+        return res.status(403).json({ ok: false, mensaje: 'Solo jefatura puede cambiar el cargo o permisos' });
+      }
+    }
 
     if (usuario) {
       const [existe] = await db.query(`SELECT id FROM usuarios WHERE usuario = ? AND id != ?`, [usuario.toLowerCase(), req.params.id]);
       if (existe.length) return res.status(409).json({ ok: false, mensaje: 'Ese usuario ya existe' });
     }
 
-    const permisosJSON = JSON.stringify(permisos || []);
+    const cargofinal    = req.user.cargo === 'jefatura' ? (cargo || rows[0].cargo) : rows[0].cargo;
+    const permisosJSON  = req.user.cargo === 'jefatura' ? JSON.stringify(permisos || []) : undefined;
 
     if (password) {
       const hash = bcrypt.hashSync(password, 10);
-      await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, password=?, permisos=? WHERE id=?`,
-        [nombre, usuario.toLowerCase(), cargo, sala||null, hash, permisosJSON, req.params.id]);
+      if (permisosJSON !== undefined) {
+        await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, password=?, permisos=? WHERE id=?`,
+          [nombre, usuario.toLowerCase(), cargofinal, sala||null, hash, permisosJSON, req.params.id]);
+      } else {
+        await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, password=? WHERE id=?`,
+          [nombre, usuario.toLowerCase(), cargofinal, sala||null, hash, req.params.id]);
+      }
     } else {
-      await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, permisos=? WHERE id=?`,
-        [nombre, usuario.toLowerCase(), cargo, sala||null, permisosJSON, req.params.id]);
+      if (permisosJSON !== undefined) {
+        await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, permisos=? WHERE id=?`,
+          [nombre, usuario.toLowerCase(), cargofinal, sala||null, permisosJSON, req.params.id]);
+      } else {
+        await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=? WHERE id=?`,
+          [nombre, usuario.toLowerCase(), cargofinal, sala||null, req.params.id]);
+      }
     }
     res.json({ ok: true, mensaje: 'Usuario actualizado' });
   } catch(e) {
@@ -81,6 +107,10 @@ router.patch('/:id', auth(ROLES), async (req, res) => {
 router.patch('/:id/estado', auth(ROLES), async (req, res) => {
   try {
     const { activo } = req.body;
+    const [target] = await db.query(`SELECT cargo FROM usuarios WHERE id = ?`, [req.params.id]);
+    if (!target.length) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
+    if (req.user.cargo !== 'jefatura' && target[0].cargo === 'jefatura')
+      return res.status(403).json({ ok: false, mensaje: 'Solo jefatura puede activar/desactivar cuentas de jefatura' });
     await db.query(`UPDATE usuarios SET activo = ? WHERE id = ?`, [activo ? 1 : 0, req.params.id]);
     res.json({ ok: true, mensaje: activo ? 'Usuario activado' : 'Usuario desactivado' });
   } catch(e) {

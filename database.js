@@ -147,12 +147,17 @@ async function initDB() {
     // -- USUARIO ADMIN INICIAL --
     const [rows] = await conn.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);
     if (!rows.length) {
-      const hash = bcrypt.hashSync('admin123', 10);
-      await conn.query(`
-        INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, permisos)
-        VALUES ('Administrador', 'admin', ?, 'jefatura', 'SALA 1', 'M', '[]')
-      `, [hash]);
-      console.log('âœ… Usuario admin creado (admin / admin123)');
+      const adminPass = process.env.ADMIN_PASSWORD;
+      if (!adminPass) {
+        console.warn('[WARN] ADMIN_PASSWORD no está definida en .env. Usuario admin no fue creado.');
+      } else {
+        const hash = bcrypt.hashSync(adminPass, 10);
+        await conn.query(`
+          INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, permisos)
+          VALUES ('Administrador', 'admin', ?, 'jefatura', 'SALA 1', 'M', '[]')
+        `, [hash]);
+        console.log('✅ Usuario admin creado con la contraseña de ADMIN_PASSWORD');
+      }
     }
 
     console.log('âœ… Base de datos MySQL iniciada correctamente');

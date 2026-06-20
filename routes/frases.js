@@ -45,6 +45,10 @@ router.get('/', auth(['asesor','supervisor','backoffice','validacion','grabacion
 // DELETE
 router.delete('/:id', auth(['supervisor','jefatura']), async (req, res) => {
   try {
+    const [rows] = await db.query(`SELECT supervisor_id FROM frases WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok:false, mensaje:'Frase no encontrada' });
+    if (req.user.cargo !== 'jefatura' && rows[0].supervisor_id !== req.user.id)
+      return res.status(403).json({ ok:false, mensaje:'No puedes eliminar frases de otros supervisores' });
     await db.query(`DELETE FROM frases WHERE id = ?`, [req.params.id]);
     res.json({ ok:true, mensaje:'Frase eliminada' });
   } catch(e) {

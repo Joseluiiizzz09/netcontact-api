@@ -1,6 +1,3 @@
-/* ================================================
-   ROUTES/VENTAS.JS — MySQL
-   ================================================ */
 const express  = require('express');
 const router   = express.Router();
 const db       = require('../database');
@@ -10,6 +7,14 @@ const path     = require('path');
 const fs       = require('fs');
 
 const ROLES_VENTAS = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
+const ESTADOS_VALIDOS_POST  = ['VENTA'];
+const ESTADOS_VALIDOS_PATCH = [
+  'VENTA','GRABADO','APROBADO','VALIDADO','EN_EJECUCION',
+  'INSTALADO','CAIDA','RECHAZO_CAMPO','TECNICO_CASA',
+  'PROGRAMADO','PENDIENTE','BLOQUEADO','SIN_AGENDA',
+  'CARACTER_ESPECIAL','FRAUDE','ZONA_RESTRINGIDA',
+  'ANULADA','OBSERVADA','REPROGRAMADA','NO CONTACTO','RECHAZADA',
+];
 
 // ===== MULTER AUDIO =====
 const audioDir = path.join(__dirname, '..', 'uploads', 'audios');
@@ -18,16 +23,16 @@ if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, audioDir),
   filename:    (req, file, cb) => {
-    const ext  = path.extname(file.originalname);
+    const ext = path.extname(file.originalname).toLowerCase();
     cb(null, 'venta_' + req.params.id + '_' + Date.now() + ext);
   },
 });
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('audio/') || ['.mp3','.wav','.ogg','.m4a','.mp4','.webm'].includes(path.extname(file.originalname).toLowerCase())) {
-      cb(null, true);
-    } else cb(new Error('Solo archivos de audio'));
+    const extOk = ['.mp3','.wav','.ogg','.m4a','.mp4','.webm'].includes(path.extname(file.originalname).toLowerCase());
+    if (extOk) cb(null, true);
+    else cb(new Error('Solo archivos de audio'));
   },
   limits: { fileSize: 50 * 1024 * 1024 },
 });
@@ -39,7 +44,7 @@ if (!fs.existsSync(fotosDir)) fs.mkdirSync(fotosDir, { recursive: true });
 const storageFotos = multer.diskStorage({
   destination: (req, file, cb) => cb(null, fotosDir),
   filename:    (req, file, cb) => {
-    const ext = path.extname(file.originalname);
+    const ext = path.extname(file.originalname).toLowerCase();
     cb(null, 'foto_' + req.params.id + '_' + Date.now() + ext);
   },
 });
@@ -52,10 +57,38 @@ const uploadFoto = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
 });
 
+// Verifica los primeros bytes del archivo para confirmar que realmente es audio
+function esArchivoAudioValido(filePath) {
+  try {
+    const buffer = Buffer.alloc(12);
+    const fd = fs.openSync(filePath, 'r');
+    fs.readSync(fd, buffer, 0, 12, 0);
+    fs.closeSync(fd);
+
+    if (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) return true; // MP3 con ID3
+    if (buffer[0] === 0xFF && (buffer[1] & 0xE0) === 0xE0)               return true; // MP3 sync
+    if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) return true; // WAV RIFF
+    if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) return true; // OGG
+    if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) return true; // WebM
+    if (buffer[4] === 0x66 && buffer[5] === 0x74 && buffer[6] === 0x79 && buffer[7] === 0x70) return true; // MP4/M4A ftyp
+    return false;
+  } catch(e) {
+    return false;
+  }
+}
+
 // ===== POST /api/ventas =====
 router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req, res) => {
   try {
     const v = req.body;
+
+    if (!v.nombre || !v.dni)
+      return res.status(400).json({ ok: false, mensaje: 'Nombre y DNI son obligatorios' });
+
+    const estadoFinal = (v.estado || 'VENTA').toUpperCase();
+    if (!ESTADOS_VALIDOS_POST.includes(estadoFinal))
+      return res.status(400).json({ ok: false, mensaje: `Estado inválido al crear. Solo se permite: ${ESTADOS_VALIDOS_POST.join(', ')}` });
+
     const [result] = await db.query(`
       INSERT INTO ventas (
         asesor_id, tipo_doc, dni, nombre, email,
@@ -73,7 +106,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       v.cuotaInstalacion||null, v.hogar||null, v.tec||null,
       v.paquete||null, v.full||null,
       parseInt(v.cantDecos)||0, parseInt(v.cantMesh)||0,
-      v.plano||null, v.estado||'VENTA', v.obs||null
+      v.plano||null, estadoFinal, v.obs||null
     ]);
     res.json({ ok: true, id: result.insertId, mensaje: 'Venta guardada' });
   } catch(e) {
@@ -116,14 +149,27 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
 // ===== POST /api/ventas/:id/audio =====
 router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req, res) => {
   try {
-    const [rows] = await db.query(`SELECT id FROM ventas WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id FROM ventas WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
     if (!req.file)    return res.status(400).json({ ok: false, mensaje: 'No se recibio archivo' });
+
+    // Asesor solo puede subir audio de sus propias ventas
+    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({ ok: false, mensaje: 'No puedes subir audio de ventas de otros asesores' });
+    }
+
+    // Verificar bytes reales del archivo
+    if (!esArchivoAudioValido(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ ok: false, mensaje: 'El archivo no es un audio válido' });
+    }
 
     const rutaRelativa = 'uploads/audios/' + req.file.filename;
     await db.query(`UPDATE ventas SET audio_path = ? WHERE id = ?`, [rutaRelativa, req.params.id]);
     res.json({ ok: true, ruta: rutaRelativa, mensaje: 'Audio guardado' });
   } catch(e) {
+    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al guardar audio' });
   }
@@ -136,14 +182,28 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       estado, obs_backoffice, observacion,
       obs_programacion, obs_validacion,
       obs_supgrab, estado_supgrab,
-      estado_grab, audio_path,
+      estado_grab,
+      // audio_path no se acepta aquí — solo se actualiza vía POST /:id/audio
     } = req.body;
 
-    const [rows] = await db.query(`SELECT id FROM ventas WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id FROM ventas WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
 
+    // Asesor solo puede modificar sus propias ventas
+    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
+      return res.status(403).json({ ok: false, mensaje: 'No puedes modificar ventas de otros asesores' });
+    }
+
+    // Asesor no puede cambiar el estado — eso corresponde a validacion, programacion, etc.
+    if (req.user.cargo === 'asesor' && estado !== undefined) {
+      return res.status(403).json({ ok: false, mensaje: 'No tienes permiso para cambiar el estado de una venta' });
+    }
+
+    if (estado !== undefined && !ESTADOS_VALIDOS_PATCH.includes(estado.toUpperCase()))
+      return res.status(400).json({ ok: false, mensaje: 'Estado inválido.' });
+
     const campos = [], vals = [];
-    if (estado           !== undefined) { campos.push('estado = ?');           vals.push(estado); }
+    if (estado           !== undefined) { campos.push('estado = ?');           vals.push(estado.toUpperCase()); }
     if (obs_backoffice   !== undefined) { campos.push('obs_backoffice = ?');   vals.push(obs_backoffice); }
     if (observacion      !== undefined) { campos.push('observacion = ?');      vals.push(observacion); }
     if (obs_programacion !== undefined) { campos.push('obs_programacion = ?'); vals.push(obs_programacion); }
@@ -151,7 +211,6 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     if (obs_supgrab      !== undefined) { campos.push('obs_supgrab = ?');      vals.push(obs_supgrab); }
     if (estado_supgrab   !== undefined) { campos.push('estado_supgrab = ?');   vals.push(estado_supgrab); }
     if (estado_grab      !== undefined) { campos.push('estado_grab = ?');      vals.push(estado_grab); }
-    if (audio_path       !== undefined) { campos.push('audio_path = ?');       vals.push(audio_path); }
 
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
 
@@ -177,15 +236,24 @@ router.get('/:id/fotos', auth(ROLES_VENTAS), async (req, res) => {
 // ===== POST /api/ventas/:id/fotos =====
 router.post('/:id/fotos', auth(ROLES_VENTAS), uploadFoto.single('foto'), async (req, res) => {
   try {
-    const [rows] = await db.query(`SELECT id FROM ventas WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id FROM ventas WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
     if (!req.file)    return res.status(400).json({ ok: false, mensaje: 'No se recibió archivo' });
 
+    // Asesor solo puede subir fotos de sus propias ventas
+    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({ ok: false, mensaje: 'No puedes subir fotos de ventas de otros asesores' });
+    }
+
     const ruta = 'uploads/fotos/' + req.file.filename;
+    // Guardamos el nombre original saneado (sin rutas)
+    const nombreSeguro = path.basename(req.file.originalname);
     await db.query(`INSERT INTO venta_fotos (venta_id, nombre, ruta, mimetype) VALUES (?,?,?,?)`,
-      [req.params.id, req.file.originalname, ruta, req.file.mimetype]);
-    res.json({ ok: true, ruta, nombre: req.file.originalname, mensaje: 'Foto guardada' });
+      [req.params.id, nombreSeguro, ruta, req.file.mimetype]);
+    res.json({ ok: true, ruta, nombre: nombreSeguro, mensaje: 'Foto guardada' });
   } catch(e) {
+    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
     res.status(500).json({ ok: false, mensaje: 'Error al guardar foto' });
   }
 });
@@ -209,8 +277,14 @@ router.delete('/:id/fotos/:fotoId', auth(ROLES_VENTAS), async (req, res) => {
 // ===== DELETE /api/ventas/:id =====
 router.delete('/:id', auth(ROLES_VENTAS), async (req, res) => {
   try {
-    const [rows] = await db.query(`SELECT id FROM ventas WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id FROM ventas WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
+
+    // Asesor solo puede eliminar sus propias ventas
+    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
+      return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar ventas de otros asesores' });
+    }
+
     await db.query(`DELETE FROM ventas WHERE id = ?`, [req.params.id]);
     res.json({ ok: true, mensaje: 'Venta eliminada' });
   } catch(e) {

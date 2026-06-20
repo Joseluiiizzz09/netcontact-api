@@ -50,7 +50,11 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
 // POST /api/leads
 router.post('/', auth(ROLES_BO), async (req, res) => {
   try {
-    const leads     = Array.isArray(req.body) ? req.body : [req.body];
+    const leads = Array.isArray(req.body) ? req.body : [req.body];
+
+    if (leads.length > 500)
+      return res.status(400).json({ ok: false, mensaje: 'No se pueden crear más de 500 leads a la vez' });
+
     const fechaHoy  = fechaPeruHoy();
     const horaAhora = horaPeruAhora();
     let creados = 0;
@@ -59,11 +63,17 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     for (const l of leads) {
       if (!l.n1) continue;
       let asesorId = l.asesor_id || null;
-      let asesorNombre = l.asesor_nombre || l.asesor || '';
+      let asesorNombre = '';
 
-      if (!asesorId && asesorNombre) {
-        const [uRows] = await db.query(`SELECT id FROM usuarios WHERE nombre = ?`, [asesorNombre]);
-        if (uRows.length) asesorId = uRows[0].id;
+      if (asesorId) {
+        // El nombre se obtiene de la BD, no del body
+        const [uRows] = await db.query(`SELECT nombre FROM usuarios WHERE id = ?`, [asesorId]);
+        if (uRows.length) asesorNombre = uRows[0].nombre;
+        else asesorId = null;
+      } else if (l.asesor_nombre || l.asesor) {
+        const nombreBuscar = l.asesor_nombre || l.asesor;
+        const [uRows] = await db.query(`SELECT id, nombre FROM usuarios WHERE nombre = ?`, [nombreBuscar]);
+        if (uRows.length) { asesorId = uRows[0].id; asesorNombre = uRows[0].nombre; }
       }
 
       const horaFinal  = asesorId ? horaAhora : '';
@@ -98,9 +108,10 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     const lead = rows[0];
 
     let asesorId = null;
+    let asesorNombreReal = '';
     if (asesor_nombre) {
-      const [uRows] = await db.query(`SELECT id FROM usuarios WHERE nombre = ?`, [asesor_nombre]);
-      if (uRows.length) asesorId = uRows[0].id;
+      const [uRows] = await db.query(`SELECT id, nombre FROM usuarios WHERE nombre = ?`, [asesor_nombre]);
+      if (uRows.length) { asesorId = uRows[0].id; asesorNombreReal = uRows[0].nombre; }
     }
 
     const horaReal      = hora_asig || horaPeruAhora();
@@ -111,7 +122,7 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
         sin_asignar=?, historial=?, rotaciones=rotaciones+?
       WHERE id=?
     `, [
-      asesorId, asesor_nombre||'', tipif_back||lead.tipif_back,
+      asesorId, asesorNombreReal, tipif_back||lead.tipif_back,
       horaReal, asesorId?0:1, historialJSON,
       req.body.sumarRotacion?1:0, req.params.id
     ]);
@@ -126,8 +137,10 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
 router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
   try {
     const { tipif_vend } = req.body;
-    const [rows] = await db.query(`SELECT id FROM leads WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id)
+      return res.status(403).json({ ok: false, mensaje: 'No puedes tipificar leads de otros asesores' });
     await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=? WHERE id=?`, [tipif_vend||'', horaPeruAhora(), req.params.id]);
     res.json({ ok: true, mensaje: 'Tipificación guardada' });
   } catch(e) {
@@ -139,8 +152,10 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
 router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
   try {
     const { obs } = req.body;
-    const [rows] = await db.query(`SELECT id FROM leads WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id)
+      return res.status(403).json({ ok: false, mensaje: 'No puedes modificar observaciones de leads de otros asesores' });
     await db.query(`UPDATE leads SET obs_asesor=? WHERE id=?`, [obs||'', req.params.id]);
     res.json({ ok: true, mensaje: 'Observacion guardada' });
   } catch(e) {
@@ -161,6 +176,9 @@ router.delete('/:id', auth(ROLES_BO), async (req, res) => {
 // DELETE /api/leads/fecha/:fecha
 router.delete('/fecha/:fecha', auth(ROLES_BO), async (req, res) => {
   try {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.fecha))
+      return res.status(400).json({ ok: false, mensaje: 'Formato de fecha inválido. Usa YYYY-MM-DD' });
+
     const [result] = await db.query(`DELETE FROM leads WHERE fecha = ?`, [req.params.fecha]);
     res.json({ ok: true, eliminados: result.affectedRows });
   } catch(e) {
