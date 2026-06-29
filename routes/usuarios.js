@@ -147,8 +147,16 @@ router.delete('/:id', auth(ROLES), async (req, res) => {
     if (rows[0].usuario === 'admin') return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar al administrador' });
     if (Number(rows[0].id) === Number(req.user.id))
       return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar tu propia cuenta' });
-    if (rows[0].cargo === 'jefatura' && req.user.cargo !== 'jefatura')
-      return res.status(403).json({ ok: false, mensaje: 'Solo jefatura puede eliminar cuentas de jefatura' });
+    if (rows[0].cargo === 'jefatura') {
+      if (req.user.cargo !== 'jefatura')
+        return res.status(403).json({ ok: false, mensaje: 'Solo jefatura puede eliminar cuentas de jefatura' });
+      const [[{ total }]] = await db.query(
+        'SELECT COUNT(*) AS total FROM usuarios WHERE cargo = ? AND activo = 1',
+        ['jefatura']
+      );
+      if (total <= 1)
+        return res.json({ ok: false, mensaje: 'No puedes eliminar el último usuario de Jefatura' });
+    }
     await db.query(`DELETE FROM usuarios WHERE id = ?`, [req.params.id]);
     res.json({ ok: true, mensaje: 'Usuario eliminado' });
   } catch(e) {
