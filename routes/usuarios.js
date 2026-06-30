@@ -144,7 +144,6 @@ router.delete('/:id', auth(ROLES), async (req, res) => {
   try {
     const [rows] = await db.query(`SELECT id, usuario, cargo FROM usuarios WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
-    if (rows[0].usuario === 'admin') return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar al administrador' });
     if (Number(rows[0].id) === Number(req.user.id))
       return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar tu propia cuenta' });
     if (rows[0].cargo === 'jefatura') {
