@@ -21,6 +21,10 @@ function horaPeruAhora() {
   return String(peru.getHours()).padStart(2,'0')+':'+String(peru.getMinutes()).padStart(2,'0');
 }
 
+function normalizarN1(valor) {
+  return String(valor || '').replace(/\D+/g, '');
+}
+
 // GET /api/leads
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
@@ -64,9 +68,43 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     const horaAhora = horaPeruAhora();
     let creados = 0;
     const ids = [];
+    const fechasUsadas = [];
+
+    // Validar todas las fechas antes de insertar para evitar lotes parciales.
+    for (const l of leads) {
+      const fechaLead = l.fecha || fechaHoy;
+      const errores = validar([
+        errorFecha(fechaLead, 'fecha'),
+        errorTexto(l.n1, 'n1', { requerido: true, max: 30 }),
+      ]);
+      if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+    }
 
     for (const l of leads) {
       if (!l.n1) continue;
+      const fechaLead = l.fecha || fechaHoy;
+      const n1Normalizado = normalizarN1(l.n1);
+
+      // El alta individual solicita esta comprobacion. La carga masiva conserva
+      // su flujo de vista previa y su opcion explicita de incluir duplicados.
+      if (l.verificar_duplicado && n1Normalizado) {
+        const [duplicados] = await db.query(`
+          SELECT id, n1, fecha
+          FROM leads
+          WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+          ORDER BY created_at DESC
+          LIMIT 1
+        `, [n1Normalizado]);
+        if (duplicados.length) {
+          return res.status(409).json({
+            ok: false,
+            duplicado: true,
+            mensaje: `El N1 ${l.n1} ya existe en la fecha ${duplicados[0].fecha}`,
+            existente: duplicados[0],
+          });
+        }
+      }
+
       let asesorId = l.asesor_id || null;
       let asesorNombre = '';
 
@@ -91,13 +129,21 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         l.campana||'', l.distrito||'', l.n1, l.n2||null, l.tipif_back||'',
-        asesorId, asesorNombre, fechaHoy, horaFinal, asesorId?0:1, historial
+        asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial
       ]);
       ids.push(result.insertId);
+      fechasUsadas.push(fechaLead);
       creados++;
     }
 
-    res.json({ ok: true, creados, ids, mensaje: `${creados} lead(s) creado(s)`, fecha_usada: fechaHoy });
+    res.json({
+      ok: true,
+      creados,
+      ids,
+      mensaje: `${creados} lead(s) creado(s)`,
+      fecha_usada: fechasUsadas[0] || fechaHoy,
+      fechas_usadas: [...new Set(fechasUsadas)],
+    });
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al crear leads' });
