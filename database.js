@@ -131,6 +131,48 @@ async function initDB() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS venta_asignaciones (
+        id                      INT AUTO_INCREMENT PRIMARY KEY,
+        venta_id                INT NOT NULL,
+        asesor_anterior_id      INT NULL,
+        asesor_anterior_nombre  VARCHAR(150),
+        asesor_anterior_sala    VARCHAR(50),
+        asesor_nuevo_id         INT NULL,
+        asesor_nuevo_nombre     VARCHAR(150) NOT NULL,
+        asesor_nuevo_sala       VARCHAR(50),
+        cambiado_por_id         INT NULL,
+        cambiado_por_nombre     VARCHAR(150) NOT NULL,
+        cambiado_por_cargo      VARCHAR(50) NOT NULL,
+        created_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (venta_id) REFERENCES ventas(id) ON DELETE CASCADE,
+        FOREIGN KEY (asesor_anterior_id) REFERENCES usuarios(id) ON DELETE SET NULL,
+        FOREIGN KEY (asesor_nuevo_id) REFERENCES usuarios(id) ON DELETE SET NULL,
+        FOREIGN KEY (cambiado_por_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS venta_historial (
+        id                 INT AUTO_INCREMENT PRIMARY KEY,
+        venta_id           INT NOT NULL,
+        tipo               VARCHAR(50) NOT NULL DEFAULT 'ACTUALIZACION',
+        modulo             VARCHAR(80) NOT NULL,
+        campo              VARCHAR(80),
+        etiqueta           VARCHAR(120),
+        valor_anterior     TEXT,
+        valor_nuevo        TEXT,
+        descripcion        TEXT,
+        usuario_id         INT NULL,
+        usuario_nombre     VARCHAR(150) NOT NULL,
+        usuario_cargo      VARCHAR(50) NOT NULL,
+        usuario_sala       VARCHAR(50),
+        created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (venta_id) REFERENCES ventas(id) ON DELETE CASCADE,
+        FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
     // Compatibilidad con instalaciones existentes: CREATE TABLE no agrega
     // columnas nuevas cuando la tabla ya fue creada.
     const columnasLead = [
@@ -283,6 +325,8 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_leads_n1 ON leads(n1)',
       'CREATE INDEX IF NOT EXISTS idx_frases_created ON frases(created_at)',
       'CREATE INDEX IF NOT EXISTS idx_fotos_venta ON venta_fotos(venta_id)',
+      'CREATE INDEX IF NOT EXISTS idx_venta_asignaciones_venta ON venta_asignaciones(venta_id, created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_venta_historial_venta ON venta_historial(venta_id, created_at)',
     ];
     for (const idx of indices) { await conn.query(idx).catch(() => {}); }
     console.log('Indices de rendimiento verificados');

@@ -86,6 +86,92 @@ function esArchivoAudioValido(filePath) {
   }
 }
 
+function salaNormalizada(sala) {
+  return String(sala || '').trim().toUpperCase();
+}
+
+async function obtenerActor(conn, userId) {
+  const [rows] = await conn.query(
+    `SELECT id, nombre, cargo, sala, activo FROM usuarios WHERE id = ? LIMIT 1`,
+    [userId]
+  );
+  return rows[0] || null;
+}
+
+async function obtenerVentaConAsesor(conn, ventaId, bloquear = false) {
+  const [rows] = await conn.query(`
+    SELECT v.id, v.asesor_id, v.asesor_nombre,
+           u.nombre AS asesor_actual_nombre, u.sala AS asesor_actual_sala
+      FROM ventas v
+      LEFT JOIN usuarios u ON u.id = v.asesor_id
+     WHERE v.id = ?
+     ${bloquear ? 'FOR UPDATE' : ''}
+  `, [ventaId]);
+  return rows[0] || null;
+}
+
+function supervisorPuedeGestionar(actor, venta) {
+  return salaNormalizada(actor?.sala) !== '' &&
+    salaNormalizada(actor?.sala) === salaNormalizada(venta?.asesor_actual_sala);
+}
+
+const MODULOS_POR_CARGO = {
+  asesor: 'Asesor',
+  supervisor: 'Supervisor',
+  backoffice: 'Back Data',
+  validacion: 'Validación',
+  grabaciones: 'Grabaciones',
+  supgrabaciones: 'Supervisión de grabaciones',
+  programacion: 'Programación',
+  seguimiento: 'Seguimiento',
+  jefatura: 'Jefatura',
+  usuarios: 'Gestión de usuarios',
+};
+
+const CAMPOS_HISTORIAL = {
+  estado: 'Estado de la venta',
+  obs_backoffice: 'Observación de Back Data',
+  observacion: 'Observación general',
+  obs_programacion: 'Observación de Programación',
+  obs_validacion: 'Observación de Validación',
+  obs_supgrab: 'Observación de Supervisión de grabaciones',
+  estado_supgrab: 'Revisión de la grabación',
+  estado_grab: 'Estado de grabación',
+  obs_seguimiento: 'Observación de Seguimiento',
+  tramo_seguimiento: 'Tramo de Seguimiento',
+  motivo_seguimiento: 'Motivo de Seguimiento',
+  audio_path: 'Archivo de audio',
+};
+
+function valorHistorial(valor) {
+  if (valor === undefined || valor === null || valor === '') return '—';
+  return String(valor);
+}
+
+async function registrarHistorial(conn, ventaId, actor, evento = {}) {
+  if (!actor) throw new Error('No se pudo identificar al usuario que realizó el cambio.');
+  await conn.query(`
+    INSERT INTO venta_historial (
+      venta_id, tipo, modulo, campo, etiqueta,
+      valor_anterior, valor_nuevo, descripcion,
+      usuario_id, usuario_nombre, usuario_cargo, usuario_sala
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `, [
+    ventaId,
+    evento.tipo || 'ACTUALIZACION',
+    evento.modulo || MODULOS_POR_CARGO[actor.cargo] || actor.cargo || 'Sistema',
+    evento.campo || null,
+    evento.etiqueta || (evento.campo ? CAMPOS_HISTORIAL[evento.campo] : null),
+    evento.valorAnterior === undefined ? null : valorHistorial(evento.valorAnterior),
+    evento.valorNuevo === undefined ? null : valorHistorial(evento.valorNuevo),
+    evento.descripcion || null,
+    actor.id || null,
+    actor.nombre || actor.usuario || 'Usuario',
+    actor.cargo || 'sistema',
+    actor.sala || null,
+  ]);
+}
+
 // ===== POST /api/ventas =====
 router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req, res) => {
   try {
@@ -179,6 +265,115 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
   }
 });
 
+// ===== PATCH /api/ventas/:id/reasignar =====
+router.patch('/:id/reasignar', auth(['supervisor','jefatura']), async (req, res) => {
+  const ventaId = Number(req.params.id);
+  const asesorNuevoId = Number(req.body?.asesor_id);
+  if (!Number.isInteger(ventaId) || ventaId <= 0 || !Number.isInteger(asesorNuevoId) || asesorNuevoId <= 0) {
+    return res.status(400).json({ ok: false, mensaje: 'Venta o asesor no válido.' });
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const actor = await obtenerActor(conn, req.user.id);
+    if (!actor || !actor.activo || !['supervisor','jefatura'].includes(actor.cargo)) {
+      await conn.rollback();
+      return res.status(403).json({ ok: false, mensaje: 'No tienes permiso para reasignar ventas.' });
+    }
+
+    const venta = await obtenerVentaConAsesor(conn, ventaId, true);
+    if (!venta) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada.' });
+    }
+
+    const [destinos] = await conn.query(`
+      SELECT id, nombre, usuario, sala, activo
+        FROM usuarios
+       WHERE id = ? AND cargo = 'asesor'
+       LIMIT 1
+    `, [asesorNuevoId]);
+    const destino = destinos[0];
+    if (!destino || !destino.activo) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, mensaje: 'El asesor seleccionado no existe o está inactivo.' });
+    }
+    if (Number(venta.asesor_id) === asesorNuevoId) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, mensaje: 'La venta ya pertenece a ese asesor.' });
+    }
+
+    if (actor.cargo === 'supervisor') {
+      if (!supervisorPuedeGestionar(actor, venta)) {
+        await conn.rollback();
+        return res.status(403).json({ ok: false, mensaje: 'Solo puedes gestionar ventas de tu sala.' });
+      }
+      if (salaNormalizada(actor.sala) !== salaNormalizada(destino.sala)) {
+        await conn.rollback();
+        return res.status(403).json({ ok: false, mensaje: 'Solo puedes reasignar a asesores de tu misma sala.' });
+      }
+    }
+
+    const anteriorNombre = venta.asesor_actual_nombre || venta.asesor_nombre || 'Sin asignar';
+    await conn.query(
+      `UPDATE ventas SET asesor_id = ?, asesor_nombre = ? WHERE id = ?`,
+      [destino.id, destino.nombre, ventaId]
+    );
+    await conn.query(`
+      INSERT INTO venta_asignaciones (
+        venta_id, asesor_anterior_id, asesor_anterior_nombre, asesor_anterior_sala,
+        asesor_nuevo_id, asesor_nuevo_nombre, asesor_nuevo_sala,
+        cambiado_por_id, cambiado_por_nombre, cambiado_por_cargo
+      ) VALUES (?,?,?,?,?,?,?,?,?,?)
+    `, [
+      ventaId, venta.asesor_id || null, anteriorNombre, venta.asesor_actual_sala || null,
+      destino.id, destino.nombre, destino.sala || null,
+      actor.id, actor.nombre, actor.cargo,
+    ]);
+    await conn.commit();
+    res.json({
+      ok: true,
+      mensaje: `Venta reasignada de ${anteriorNombre} a ${destino.nombre}.`,
+      data: { asesor_id: destino.id, asesor_nombre: destino.nombre, sala: destino.sala || '' },
+    });
+  } catch (e) {
+    await conn.rollback().catch(() => {});
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al reasignar la venta.' });
+  } finally {
+    conn.release();
+  }
+});
+
+router.get('/:id/historial-asignaciones', auth(['jefatura']), async (req, res) => {
+  const ventaId = Number(req.params.id);
+  if (!Number.isInteger(ventaId) || ventaId <= 0) {
+    return res.status(400).json({ ok: false, mensaje: 'Venta no válida.' });
+  }
+  try {
+    const actor = await obtenerActor(db, req.user.id);
+    const venta = await obtenerVentaConAsesor(db, ventaId);
+    if (!venta) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada.' });
+    if (!actor || !actor.activo || actor.cargo !== 'jefatura') {
+      return res.status(403).json({ ok: false, mensaje: 'No tienes permiso para ver este historial.' });
+    }
+    const [data] = await db.query(`
+      SELECT id, venta_id,
+             asesor_anterior_id, asesor_anterior_nombre, asesor_anterior_sala,
+             asesor_nuevo_id, asesor_nuevo_nombre, asesor_nuevo_sala,
+             cambiado_por_id, cambiado_por_nombre, cambiado_por_cargo, created_at
+        FROM venta_asignaciones
+       WHERE venta_id = ?
+       ORDER BY created_at ASC, id ASC
+    `, [ventaId]);
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener el historial de asignaciones.' });
+  }
+});
+
 // ===== POST /api/ventas/:id/audio =====
 router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req, res) => {
   try {
@@ -200,6 +395,14 @@ router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req
 
     const rutaRelativa = 'uploads/audios/' + req.file.filename;
     await db.query(`UPDATE ventas SET audio_path = ? WHERE id = ?`, [rutaRelativa, req.params.id]);
+    const actor = await obtenerActor(db, req.user.id);
+    await registrarHistorial(db, req.params.id, actor, {
+      tipo: 'ARCHIVO',
+      campo: 'audio_path',
+      valorAnterior: null,
+      valorNuevo: req.file.originalname,
+      descripcion: 'Se subió o reemplazó la grabación de audio de la venta.',
+    });
     res.json({ ok: true, ruta: rutaRelativa, mensaje: 'Audio guardado' });
   } catch(e) {
     if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
@@ -210,6 +413,7 @@ router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req
 
 // ===== PATCH /api/ventas/:id =====
 router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
+  const conn = await db.getConnection();
   try {
     const {
       estado, obs_backoffice, observacion,
@@ -220,7 +424,14 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       // audio_path no se acepta aquí — solo se actualiza vía POST /:id/audio
     } = req.body;
 
-    const [rows] = await db.query(`SELECT id, asesor_id FROM ventas WHERE id = ?`, [req.params.id]);
+    const [rows] = await conn.query(`
+      SELECT id, asesor_id, estado, obs_backoffice, observacion,
+             obs_programacion, obs_validacion, obs_supgrab,
+             estado_supgrab, estado_grab, obs_seguimiento,
+             tramo_seguimiento, motivo_seguimiento
+        FROM ventas
+       WHERE id = ?
+    `, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
 
     // Asesor solo puede modificar sus propias ventas
@@ -255,18 +466,27 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     ]);
     if (errObs) return res.status(400).json({ ok: false, mensaje: errObs[0] });
 
-    const campos = [], vals = [];
-    if (estado           !== undefined) { campos.push('estado = ?');           vals.push(estado.toUpperCase()); }
-    if (obs_backoffice   !== undefined) { campos.push('obs_backoffice = ?');   vals.push(obs_backoffice); }
-    if (observacion      !== undefined) { campos.push('observacion = ?');      vals.push(observacion); }
-    if (obs_programacion !== undefined) { campos.push('obs_programacion = ?'); vals.push(obs_programacion); }
-    if (obs_validacion   !== undefined) { campos.push('obs_validacion = ?');   vals.push(obs_validacion); }
-    if (obs_supgrab      !== undefined) { campos.push('obs_supgrab = ?');      vals.push(obs_supgrab); }
-    if (estado_supgrab   !== undefined) { campos.push('estado_supgrab = ?');   vals.push(estado_supgrab); }
-    if (estado_grab      !== undefined) { campos.push('estado_grab = ?');      vals.push(estado_grab); }
-    if (obs_seguimiento    !== undefined) { campos.push('obs_seguimiento = ?');    vals.push(obs_seguimiento); }
-    if (tramo_seguimiento  !== undefined) { campos.push('tramo_seguimiento = ?');  vals.push(tramo_seguimiento); }
-    if (motivo_seguimiento !== undefined) { campos.push('motivo_seguimiento = ?'); vals.push(motivo_seguimiento); }
+    const campos = [], vals = [], cambios = [];
+    const agregarCambio = (campo, valor) => {
+      if (valor === undefined) return;
+      const normalizado = campo === 'estado' ? String(valor).toUpperCase() : valor;
+      campos.push(`${campo} = ?`);
+      vals.push(normalizado);
+      if (valorHistorial(rows[0][campo]) !== valorHistorial(normalizado)) {
+        cambios.push({ campo, valorAnterior: rows[0][campo], valorNuevo: normalizado });
+      }
+    };
+    agregarCambio('estado', estado);
+    agregarCambio('obs_backoffice', obs_backoffice);
+    agregarCambio('observacion', observacion);
+    agregarCambio('obs_programacion', obs_programacion);
+    agregarCambio('obs_validacion', obs_validacion);
+    agregarCambio('obs_supgrab', obs_supgrab);
+    agregarCambio('estado_supgrab', estado_supgrab);
+    agregarCambio('estado_grab', estado_grab);
+    agregarCambio('obs_seguimiento', obs_seguimiento);
+    agregarCambio('tramo_seguimiento', tramo_seguimiento);
+    agregarCambio('motivo_seguimiento', motivo_seguimiento);
 
     // Responsable de "GRABANDO": SIEMPRE server-side desde el usuario
     // autenticado del token. grabando_por_id NUNCA se lee de req.body — el
@@ -287,12 +507,21 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
 
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
 
+    await conn.beginTransaction();
     vals.push(req.params.id);
-    await db.query(`UPDATE ventas SET ${campos.join(', ')} WHERE id = ?`, vals);
+    await conn.query(`UPDATE ventas SET ${campos.join(', ')} WHERE id = ?`, vals);
+    const actor = await obtenerActor(conn, req.user.id);
+    for (const cambio of cambios) {
+      await registrarHistorial(conn, req.params.id, actor, cambio);
+    }
+    await conn.commit();
     res.json({ ok: true, mensaje: 'Venta actualizada' });
   } catch(e) {
+    await conn.rollback().catch(() => {});
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar venta' });
+  } finally {
+    conn.release();
   }
 });
 
@@ -302,83 +531,56 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
 // que el frontend (textoFecha en VentaAssignmentModal.jsx) la formatee igual
 // que un DATETIME real de MySQL. Líneas que no calcen con el formato se
 // ignoran — no se les inventa fecha.
-const RE_LINEA_HISTORIAL = /^\[(\d{2})\/(\d{2})\/(\d{4}),?\s+(\d{2}):(\d{2})\s*-\s*(.+?)\]\s*(.*)$/;
-function parsearLineasHistorial(texto, modulo) {
-  const eventos = [];
-  for (const linea of String(texto || '').split('\n')) {
-    const m = linea.trim().match(RE_LINEA_HISTORIAL);
-    if (!m) continue;
-    const [, dd, mm, yyyy, hh, min, usuario, mensaje] = m;
-    if (Number(mm) < 1 || Number(mm) > 12 || Number(dd) < 1 || Number(dd) > 31 || Number(hh) > 23 || Number(min) > 59) continue;
-    eventos.push({
-      id: `${modulo}-${yyyy}${mm}${dd}${hh}${min}-${eventos.length}`,
-      tipo: 'actualizacion',
-      modulo,
-      usuario_cargo: modulo === 'Validación' ? 'validacion' : 'supgrabaciones',
-      usuario_nombre: usuario.trim(),
-      usuario_sala: null,
-      created_at: `${yyyy}-${mm}-${dd} ${hh}:${min}:00`,
-      etiqueta: mensaje.trim() || 'Actualización',
-      valor_anterior: null,
-      valor_nuevo: null,
-      descripcion: null,
-    });
+router.get('/:id/historial', auth(['jefatura']), async (req, res) => {
+  const ventaId = Number(req.params.id);
+  if (!Number.isInteger(ventaId) || ventaId <= 0) {
+    return res.status(400).json({ ok: false, mensaje: 'Venta no válida.' });
   }
-  return eventos;
-}
-
-// ===== GET /api/ventas/:id/historial =====
-// Auditoría consolidada de la venta con datos REALMENTE persistidos:
-// creación + historial real de Validación (obs_validacion) + historial real
-// de Super Grabaciones (obs_supgrab). Grabaciones/Programación/Seguimiento
-// y reasignaciones NO tienen historial persistido todavía (solo guardan el
-// último valor) — no se inventan fechas para ellos, ver CLAUDE.md/tarea.
-router.get('/:id/historial', auth(['jefatura', 'supervisor']), async (req, res) => {
   try {
-    const errId = errorId(req.params.id, 'id');
-    if (errId) return res.status(400).json({ ok: false, mensaje: errId });
-
-    const [rows] = await db.query(`
-      SELECT v.id, v.nombre, v.created_at, v.obs_validacion, v.obs_supgrab,
-             v.asesor_id, u.sala AS asesor_sala, u.nombre AS asesor_nombre
-      FROM ventas v
-      LEFT JOIN usuarios u ON v.asesor_id = u.id
-      WHERE v.id = ?
-    `, [req.params.id]);
-    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
-    const v = rows[0];
-
-    // Jefatura (cargo principal o delegado vía permisos) ve todo. Cualquier
-    // otro cargo que llegue aquí solo puede hacerlo como 'supervisor'
-    // (único otro permitido en auth() de esta ruta) y se restringe a su
-    // propia sala — denegado por defecto si la venta no tiene sala conocida.
-    const esJefatura = req.user.cargo === 'jefatura' || (req.user.permisos || []).includes('jefatura');
-    if (!esJefatura && v.asesor_sala !== req.user.sala) {
-      return res.status(403).json({ ok: false, mensaje: 'No puedes ver el historial de ventas de otra sala' });
+    const actor = await obtenerActor(db, req.user.id);
+    if (!actor || !actor.activo || actor.cargo !== 'jefatura') {
+      return res.status(403).json({ ok: false, mensaje: 'El historial completo es exclusivo de Jefatura.' });
     }
-
-    const eventos = [
-      {
-        id: `creacion-${v.id}`,
-        tipo: 'creacion',
-        modulo: 'Creación',
-        usuario_cargo: 'sistema',
-        usuario_nombre: 'No registrado',
-        usuario_sala: null,
-        created_at: v.created_at,
-        etiqueta: 'Venta creada',
-        valor_anterior: null,
-        valor_nuevo: null,
-        descripcion: `Asesor actualmente asignado: ${v.asesor_nombre || 'Sin asignar'}. El asesor original no quedó registrado si la venta fue reasignada.`,
-      },
-      ...parsearLineasHistorial(v.obs_validacion, 'Validación'),
-      ...parsearLineasHistorial(v.obs_supgrab, 'Super Grabaciones'),
-    ].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-
-    res.json({ ok: true, data: eventos });
+    const [ventas] = await db.query(`
+      SELECT v.id, v.estado, v.created_at, v.asesor_id,
+             COALESCE(u.nombre, v.asesor_nombre) AS asesor_nombre, u.sala AS asesor_sala
+        FROM ventas v LEFT JOIN usuarios u ON u.id = v.asesor_id
+       WHERE v.id = ? LIMIT 1
+    `, [ventaId]);
+    const venta = ventas[0];
+    if (!venta) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada.' });
+    const [cambios] = await db.query(`
+      SELECT id, venta_id, tipo, modulo, campo, etiqueta, valor_anterior, valor_nuevo,
+             descripcion, usuario_id, usuario_nombre, usuario_cargo, usuario_sala, created_at
+        FROM venta_historial WHERE venta_id = ?
+    `, [ventaId]);
+    const [asignaciones] = await db.query(`
+      SELECT id, asesor_anterior_nombre, asesor_anterior_sala, asesor_nuevo_nombre,
+             asesor_nuevo_sala, cambiado_por_id, cambiado_por_nombre,
+             cambiado_por_cargo, created_at
+        FROM venta_asignaciones WHERE venta_id = ?
+    `, [ventaId]);
+    const historial = [{
+      id: `creacion-${venta.id}`, tipo: 'CREACION', modulo: 'Asesor', campo: 'estado',
+      etiqueta: 'Venta registrada', valor_anterior: null, valor_nuevo: venta.estado || 'VENTA',
+      descripcion: 'Registro inicial de la venta en el sistema.', usuario_id: venta.asesor_id,
+      usuario_nombre: venta.asesor_nombre || 'Usuario original', usuario_cargo: 'asesor',
+      usuario_sala: venta.asesor_sala, created_at: venta.created_at,
+    }, ...cambios, ...asignaciones.map(item => ({
+      id: `asignacion-${item.id}`, tipo: 'REASIGNACION',
+      modulo: MODULOS_POR_CARGO[item.cambiado_por_cargo] || item.cambiado_por_cargo || 'Jefatura',
+      campo: 'asesor_id', etiqueta: 'Asesor responsable',
+      valor_anterior: `${item.asesor_anterior_nombre || 'Sin asignar'} · ${item.asesor_anterior_sala || 'Sin sala'}`,
+      valor_nuevo: `${item.asesor_nuevo_nombre || 'Sin asignar'} · ${item.asesor_nuevo_sala || 'Sin sala'}`,
+      descripcion: 'La venta fue reasignada a otro asesor.', usuario_id: item.cambiado_por_id,
+      usuario_nombre: item.cambiado_por_nombre, usuario_cargo: item.cambiado_por_cargo,
+      usuario_sala: null, created_at: item.created_at,
+    }))].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) ||
+      String(a.id).localeCompare(String(b.id)));
+    res.json({ ok: true, data: historial });
   } catch(e) {
     console.error(e);
-    res.status(500).json({ ok: false, mensaje: 'Error al obtener historial' });
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener el historial completo de la venta.' });
   }
 });
 
@@ -410,6 +612,15 @@ router.post('/:id/fotos', auth(ROLES_VENTAS), uploadFoto.single('foto'), async (
     const nombreSeguro = path.basename(req.file.originalname);
     await db.query(`INSERT INTO venta_fotos (venta_id, nombre, ruta, mimetype) VALUES (?,?,?,?)`,
       [req.params.id, nombreSeguro, ruta, req.file.mimetype]);
+    const actor = await obtenerActor(db, req.user.id);
+    await registrarHistorial(db, req.params.id, actor, {
+      tipo: 'ARCHIVO',
+      campo: 'foto',
+      etiqueta: 'Foto o documento',
+      valorAnterior: null,
+      valorNuevo: nombreSeguro,
+      descripcion: 'Se agregó un archivo a la venta.',
+    });
     res.json({ ok: true, ruta, nombre: nombreSeguro, mensaje: 'Foto guardada' });
   } catch(e) {
     if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
@@ -427,6 +638,15 @@ router.delete('/:id/fotos/:fotoId', auth(ROLES_VENTAS), async (req, res) => {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch(e) {}
     await db.query(`DELETE FROM venta_fotos WHERE id = ?`, [req.params.fotoId]);
+    const actor = await obtenerActor(db, req.user.id);
+    await registrarHistorial(db, req.params.id, actor, {
+      tipo: 'ARCHIVO',
+      campo: 'foto',
+      etiqueta: 'Foto o documento',
+      valorAnterior: rows[0].nombre,
+      valorNuevo: 'Eliminado',
+      descripcion: 'Se eliminó un archivo de la venta.',
+    });
     res.json({ ok: true, mensaje: 'Foto eliminada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al eliminar foto' });
@@ -434,14 +654,16 @@ router.delete('/:id/fotos/:fotoId', auth(ROLES_VENTAS), async (req, res) => {
 });
 
 // ===== DELETE /api/ventas/:id =====
-router.delete('/:id', auth(ROLES_VENTAS), async (req, res) => {
+router.delete('/:id', auth(['supervisor','jefatura']), async (req, res) => {
   try {
-    const [rows] = await db.query(`SELECT id, asesor_id FROM ventas WHERE id = ?`, [req.params.id]);
-    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
-
-    // Asesor solo puede eliminar sus propias ventas
-    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
-      return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar ventas de otros asesores' });
+    const actor = await obtenerActor(db, req.user.id);
+    const venta = await obtenerVentaConAsesor(db, req.params.id);
+    if (!venta) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
+    if (!actor || !actor.activo || !['supervisor','jefatura'].includes(actor.cargo)) {
+      return res.status(403).json({ ok: false, mensaje: 'No tienes permiso para eliminar ventas.' });
+    }
+    if (actor.cargo === 'supervisor' && !supervisorPuedeGestionar(actor, venta)) {
+      return res.status(403).json({ ok: false, mensaje: 'Solo puedes eliminar ventas de tu sala.' });
     }
 
     await db.query(`DELETE FROM ventas WHERE id = ?`, [req.params.id]);
