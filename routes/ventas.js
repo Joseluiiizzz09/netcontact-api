@@ -247,7 +247,16 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     }
 
     if (req.user.cargo === 'programacion' || programacion === '1') {
-      sql += ` AND UPPER(v.estado) IN (${ESTADOS_PROGRAMACION.map(() => '?').join(',')})`;
+      // Una venta aprobada por Super de Grabaciones NUNCA cambia `estado`
+      // (sigue en 'VALIDADO' — campo propio de Validación, ver comentario en
+      // SupGrabaciones.jsx guardarRevision). Por eso el filtro original
+      // (solo ESTADOS_PROGRAMACION) dejaba 0 ventas: nada transiciona nunca
+      // `estado` fuera de VALIDADO tras Grabaciones. El frontend de
+      // Programación ya asume este caso (ver estadoVisible() en
+      // Programacion.jsx, que muestra estas filas como GRABADO) — aquí se
+      // agrega la misma condición para que esas filas realmente lleguen.
+      sql += ` AND (UPPER(v.estado) IN (${ESTADOS_PROGRAMACION.map(() => '?').join(',')})
+                OR (UPPER(v.estado) = 'VALIDADO' AND LOWER(v.estado_grab) = 'grabado' AND LOWER(v.estado_supgrab) = 'aprobado'))`;
       params.push(...ESTADOS_PROGRAMACION);
     }
 

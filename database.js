@@ -239,7 +239,7 @@ async function initDB() {
         id                 INT AUTO_INCREMENT PRIMARY KEY,
         nombre             VARCHAR(150) NOT NULL,
         tipo_doc           VARCHAR(10)  DEFAULT 'DNI',
-        dni                VARCHAR(20)  NOT NULL,
+        dni                VARCHAR(20)  NULL,
         telefono1          VARCHAR(20)  DEFAULT '',
         telefono2          VARCHAR(20)  DEFAULT '',
         distrito           VARCHAR(100) DEFAULT '',
@@ -267,6 +267,9 @@ async function initDB() {
     if (!idxVR[0].n) {
       await conn.query(`CREATE INDEX idx_vr_usuario_fecha ON ventas_reclutamiento(usuario_id, created_at)`);
     }
+    // DNI ahora es opcional al registrar un postulante (compatibilidad con
+    // instalaciones existentes donde la tabla ya se creó con dni NOT NULL).
+    await conn.query(`ALTER TABLE ventas_reclutamiento MODIFY dni VARCHAR(20) NULL`).catch(() => {});
     const [idxVR2] = await conn.query(`
       SELECT COUNT(*) AS n FROM information_schema.STATISTICS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ventas_reclutamiento' AND INDEX_NAME = 'idx_vr_dni'

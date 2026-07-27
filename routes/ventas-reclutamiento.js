@@ -11,7 +11,14 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../database');
 const auth    = require('../middleware/auth');
-const { validar, errorTexto } = require('../middleware/validar');
+const { validar, errorTexto, errorDni } = require('../middleware/validar');
+
+// Convierte '' o undefined en NULL real (nunca el texto "NULL"/"OPCIONAL") —
+// dni y telefono2 son opcionales en Reclutamiento.
+function opcional(valor) {
+  const t = String(valor ?? '').trim();
+  return t ? t : null;
+}
 const { syncPostulanteToSheet } = require('../utils/googleSheets');
 
 const ROLES_ALL   = ['backreclutamiento', 'jefatura', 'usuarios', 'asesorreclutamiento'];
@@ -36,9 +43,16 @@ async function resolverPostulante(id) {
   return rows[0] || null;
 }
 
+// Desconectado por defecto: MySQL es la única fuente de verdad de
+// Reclutamiento. Se reactiva solo con GOOGLE_SHEETS_RECLUTAMIENTO_ENABLED=true
+// explícito en .env — no se toca producción por accidente. utils/googleSheets.js
+// y las credenciales se dejan intactos, solo se deja de invocar la sincronización.
+const SHEETS_RECLUTAMIENTO_ENABLED = process.env.GOOGLE_SHEETS_RECLUTAMIENTO_ENABLED === 'true';
+
 // Guarda en Sheets sin bloquear la respuesta al frontend ni el registro ya
 // confirmado en MySQL — si falla, solo se marca ERROR para reintento futuro.
 async function sincronizarYMarcar(id) {
+  if (!SHEETS_RECLUTAMIENTO_ENABLED) return;
   const postulante = await resolverPostulante(id);
   if (!postulante) return;
   const resultado = await syncPostulanteToSheet(postulante);
@@ -84,7 +98,10 @@ router.post('/', auth(ROLES_ALL), async (req, res) => {
     const b = req.body || {};
     const errores = validar([
       errorTexto(b.nombre, 'nombre', { requerido: true, max: 150 }),
-      errorTexto(b.dni, 'dni', { requerido: true, max: 20 }),
+      errorTexto(b.telefono1, 'telefono1', { requerido: true, max: 20 }),
+      errorDni(b.dni, b.tipoDoc || 'DNI'),
+      b.telefono2 && !/^\d+$/.test(String(b.telefono2).trim())
+        ? 'El teléfono secundario solo puede contener números' : null,
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
 
@@ -95,7 +112,7 @@ router.post('/', auth(ROLES_ALL), async (req, res) => {
          observacion, usuario_id)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `, [
-      b.nombre.trim(), b.tipoDoc || 'DNI', b.dni.trim(), b.telefono1 || '', b.telefono2 || '',
+      b.nombre.trim(), b.tipoDoc || 'DNI', opcional(b.dni), b.telefono1.trim(), b.telefono2 || '',
       b.distrito || '', b.puesto || '', b.fuente || '', b.empresa || '',
       b.experiencia || '', b.disponibilidad || '', b.estadoReclutamiento || 'NUEVO',
       b.fechaEntrevista || null, b.horaEntrevista || '', b.obs || '', req.user.id,
@@ -119,8 +136,11 @@ router.patch('/:id', auth(ROLES_ALL), async (req, res) => {
 
     const b = req.body || {};
     const errores = validar([
-      b.nombre !== undefined ? errorTexto(b.nombre, 'nombre', { requerido: true, max: 150 }) : null,
-      b.dni    !== undefined ? errorTexto(b.dni, 'dni', { requerido: true, max: 20 })         : null,
+      b.nombre     !== undefined ? errorTexto(b.nombre, 'nombre', { requerido: true, max: 150 }) : null,
+      b.telefono1  !== undefined ? errorTexto(b.telefono1, 'telefono1', { requerido: true, max: 20 }) : null,
+      b.dni        !== undefined ? errorDni(b.dni, b.tipoDoc ?? existente.tipo_doc) : null,
+      b.telefono2 && !/^\d+$/.test(String(b.telefono2).trim())
+        ? 'El teléfono secundario solo puede contener números' : null,
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
 
@@ -131,7 +151,8 @@ router.patch('/:id', auth(ROLES_ALL), async (req, res) => {
         hora_entrevista=?, observacion=?
       WHERE id=?
     `, [
-      b.nombre ?? existente.nombre, b.tipoDoc ?? existente.tipo_doc, b.dni ?? existente.dni,
+      b.nombre ?? existente.nombre, b.tipoDoc ?? existente.tipo_doc,
+      b.dni !== undefined ? opcional(b.dni) : existente.dni,
       b.telefono1 ?? existente.telefono1, b.telefono2 ?? existente.telefono2,
       b.distrito ?? existente.distrito, b.puesto ?? existente.puesto, b.fuente ?? existente.campana,
       b.empresa ?? existente.empresa, b.experiencia ?? existente.experiencia,

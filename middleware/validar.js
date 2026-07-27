@@ -28,6 +28,8 @@ function errorDni(dni, tipoDoc = 'DNI') {
   if (!dni) return null;
   if (tipoDoc === 'DNI' && !(/^\d{8}$/.test(String(dni).trim())))
     return 'DNI debe tener exactamente 8 dígitos numéricos';
+  if (!(/^\d+$/.test(String(dni).trim())))
+    return 'El documento solo puede contener números';
   if (String(dni).length > 20)
     return 'Documento demasiado largo';
   return null;
