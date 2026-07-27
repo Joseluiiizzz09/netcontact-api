@@ -8,7 +8,7 @@ const fs       = require('fs');
 const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositivo, errorId, errorEnum, TIPO_DOC_OK } = require('../middleware/validar');
 
 const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
-const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon_voz'];
+const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz'];
 const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado'];
 const TRAMOS_SEGUIMIENTO_OK = ['AM 1','AM 2','PM 1','PM 2','PM 3'];
 const ESTADOS_VALIDOS_POST  = ['VENTA'];
@@ -19,6 +19,10 @@ const ESTADOS_VALIDOS_PATCH = [
   'CARACTER_ESPECIAL','FRAUDE','ZONA_RESTRINGIDA',
   'ANULADA','OBSERVADA','REPROGRAMADA','NO CONTACTO','RECHAZADA',
   'NO_DESEA','NO_CONTESTA','SERVICIO_ACTIVO','BUZON_VOZ','CORTA_LLAMADA',
+];
+const ESTADOS_PROGRAMACION = [
+  'APROBADO','PROGRAMADO','BLOQUEADO','SIN_AGENDA','CARACTER_ESPECIAL',
+  'FRAUDE','ZONA_RESTRINGIDA','INSTALADO','PENDIENTE','CAIDA',
 ];
 
 // ===== MULTER AUDIO =====
@@ -157,7 +161,8 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     }
 
     if (req.user.cargo === 'programacion' || programacion === '1') {
-      sql += ` AND UPPER(v.estado) != 'VENTA' AND v.estado IS NOT NULL AND v.estado != ''`;
+      sql += ` AND UPPER(v.estado) IN (${ESTADOS_PROGRAMACION.map(() => '?').join(',')})`;
+      params.push(...ESTADOS_PROGRAMACION);
     }
 
     if (dni)    { sql += ` AND v.dni LIKE ?`;              params.push(`%${dni}%`); }
