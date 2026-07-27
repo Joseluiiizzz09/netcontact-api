@@ -14,6 +14,7 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit:    50,
   timezone: '-05:00', // Peru UTC-5
+  dateStrings: true,  // DATE/DATETIME se entregan sin conversión ISO/UTC
 });
 
 /* â”€â”€ CREAR TABLAS â”€â”€ */
@@ -110,6 +111,10 @@ async function initDB() {
         distrito      VARCHAR(100) DEFAULT '',
         n1            VARCHAR(20)  NOT NULL,
         n2            VARCHAR(20),
+        tipo_contacto VARCHAR(20)  DEFAULT 'LLAMADA',
+        direccion     TEXT,
+        coordenadas   VARCHAR(255) DEFAULT '',
+        obs_back      TEXT,
         tipif_back    VARCHAR(100) DEFAULT '',
         asesor_id     INT,
         asesor_nombre VARCHAR(150),
@@ -125,6 +130,144 @@ async function initDB() {
         FOREIGN KEY (asesor_id) REFERENCES usuarios(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+
+    // Compatibilidad con instalaciones existentes: CREATE TABLE no agrega
+    // columnas nuevas cuando la tabla ya fue creada.
+    const columnasLead = [
+      ['tipo_contacto', "VARCHAR(20) DEFAULT 'LLAMADA'"],
+      ['direccion',     'TEXT'],
+      ['coordenadas',   "VARCHAR(255) DEFAULT ''"],
+      ['obs_back',      'TEXT'],
+    ];
+    for (const [columna, definicion] of columnasLead) {
+      await conn.query(`ALTER TABLE leads ADD COLUMN ${columna} ${definicion}`)
+        .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    }
+
+    // Reclutamiento / RRHH — tabla completamente separada de `leads`
+    // (Backoffice comercial). Mismo patrón técnico (asesor_id + historial +
+    // rotaciones), sin campos comerciales (tipo_contacto/dirección/
+    // coordenadas/obs_back/tipif_back no existen aquí).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS leads_reclutamiento (
+        id               INT AUTO_INCREMENT PRIMARY KEY,
+        campana          VARCHAR(100) DEFAULT '',
+        departamento     VARCHAR(100) DEFAULT '',
+        provincia        VARCHAR(100) DEFAULT '',
+        distrito         VARCHAR(100) DEFAULT '',
+        n1               VARCHAR(20)  NOT NULL,
+        n2               VARCHAR(20),
+        asesor_id        INT,
+        asesor_nombre    VARCHAR(150),
+        fecha            DATE         NOT NULL,
+        hora_asig        VARCHAR(10)  DEFAULT '',
+        rotaciones       INT          DEFAULT 0,
+        sin_asignar      TINYINT(1)   DEFAULT 1,
+        tipif_vend       VARCHAR(100) DEFAULT '',
+        tipif_hora       VARCHAR(10)  DEFAULT '',
+        obs_asesor       TEXT,
+        historial        TEXT,
+        usuario_back_id  INT,
+        created_at       DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (asesor_id)       REFERENCES usuarios(id) ON DELETE SET NULL,
+        FOREIGN KEY (usuario_back_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    const [idxLR] = await conn.query(`
+      SELECT COUNT(*) AS n FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads_reclutamiento' AND INDEX_NAME = 'idx_lr_asesor_fecha'
+    `);
+    if (!idxLR[0].n) {
+      await conn.query(`CREATE INDEX idx_lr_asesor_fecha ON leads_reclutamiento(asesor_id, fecha)`);
+    }
+    const [idxLR2] = await conn.query(`
+      SELECT COUNT(*) AS n FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads_reclutamiento' AND INDEX_NAME = 'idx_lr_n1'
+    `);
+    if (!idxLR2[0].n) {
+      await conn.query(`CREATE INDEX idx_lr_n1 ON leads_reclutamiento(n1)`);
+    }
+
+    // Postulantes de Reclutamiento ("Nuevo Postulante" en dashboardreclutamiento.jsx).
+    // Tabla completamente separada de `ventas` (comercial) — solo candidatos a
+    // contratación, nunca clientes. sheets_sync_status/synced_at soportan la
+    // copia operativa en Google Sheets sin bloquear el guardado en MySQL.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS ventas_reclutamiento (
+        id                 INT AUTO_INCREMENT PRIMARY KEY,
+        nombre             VARCHAR(150) NOT NULL,
+        tipo_doc           VARCHAR(10)  DEFAULT 'DNI',
+        dni                VARCHAR(20)  NOT NULL,
+        telefono1          VARCHAR(20)  DEFAULT '',
+        telefono2          VARCHAR(20)  DEFAULT '',
+        distrito           VARCHAR(100) DEFAULT '',
+        puesto             VARCHAR(100) DEFAULT '',
+        campana            VARCHAR(50)  DEFAULT '',
+        empresa            VARCHAR(50)  DEFAULT '',
+        experiencia        VARCHAR(100) DEFAULT '',
+        disponibilidad     VARCHAR(100) DEFAULT '',
+        estado_reclutamiento VARCHAR(50) DEFAULT 'NUEVO',
+        fecha_entrevista   DATE         NULL,
+        hora_entrevista    VARCHAR(10)  DEFAULT '',
+        observacion        TEXT,
+        usuario_id         INT,
+        sheets_sync_status VARCHAR(20)  DEFAULT 'PENDING',
+        sheets_synced_at   DATETIME     NULL,
+        created_at         DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        updated_at         DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    const [idxVR] = await conn.query(`
+      SELECT COUNT(*) AS n FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ventas_reclutamiento' AND INDEX_NAME = 'idx_vr_usuario_fecha'
+    `);
+    if (!idxVR[0].n) {
+      await conn.query(`CREATE INDEX idx_vr_usuario_fecha ON ventas_reclutamiento(usuario_id, created_at)`);
+    }
+    const [idxVR2] = await conn.query(`
+      SELECT COUNT(*) AS n FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ventas_reclutamiento' AND INDEX_NAME = 'idx_vr_dni'
+    `);
+    if (!idxVR2[0].n) {
+      await conn.query(`CREATE INDEX idx_vr_dni ON ventas_reclutamiento(dni)`);
+    }
+
+    // Responsable de "GRABANDO" en Grabaciones — columna independiente del
+    // estado_grab (que se mantiene únicamente en {"grabando"}), nullable
+    // para no romper ventas históricas. Se setea siempre server-side desde
+    // el token, nunca desde el frontend (ver PATCH /:id en routes/ventas.js).
+    await conn.query(`ALTER TABLE ventas ADD COLUMN grabando_por_id INT NULL`)
+      .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    // Verificación vía information_schema (portable entre MySQL y MariaDB,
+    // a diferencia de capturar códigos de error de ALTER que difieren entre
+    // motores) para no reintentar el ALTER si el FK ya existe.
+    const [fkExistente] = await conn.query(`
+      SELECT COUNT(*) AS n FROM information_schema.TABLE_CONSTRAINTS
+      WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'ventas'
+        AND CONSTRAINT_NAME = 'fk_ventas_grabando_por' AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+    `);
+    if (!fkExistente[0].n) {
+      await conn.query(`
+        ALTER TABLE ventas ADD CONSTRAINT fk_ventas_grabando_por
+          FOREIGN KEY (grabando_por_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      `);
+    }
+
+    // Seguimiento: tramo/comentario/motivo propios de esa etapa (nullable,
+    // no rompen ventas históricas). Independientes de `observacion` (nota
+    // original del asesor) y de obs_backoffice/obs_programacion/
+    // obs_validacion/obs_supgrab (una columna dedicada por etapa, mismo
+    // patrón aquí).
+    const columnasSeguimiento = [
+      ['obs_seguimiento',    'TEXT NULL'],
+      ['tramo_seguimiento',  'VARCHAR(20) NULL'],
+      ['motivo_seguimiento', 'VARCHAR(150) NULL'],
+    ];
+    for (const [columna, definicion] of columnasSeguimiento) {
+      await conn.query(`ALTER TABLE ventas ADD COLUMN ${columna} ${definicion}`)
+        .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    }
 
     // -- INDICES PARA RENDIMIENTO (150+ usuarios) --
     const indices = [

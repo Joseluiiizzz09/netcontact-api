@@ -9,6 +9,11 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
+const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['NO TOCAR', 'FRAUDE']);
+
+function tipificacionProhibida(valor) {
+  return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
+}
 
 function fechaPeruHoy() {
   const ahora = new Date();
@@ -76,6 +81,10 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const errores = validar([
         errorFecha(fechaLead, 'fecha'),
         errorTexto(l.n1, 'n1', { requerido: true, max: 30 }),
+        errorTexto(l.tipo_contacto, 'tipo_contacto', { max: 20 }),
+        errorTexto(l.direccion, 'direccion', { max: 1000 }),
+        errorTexto(l.coordenadas, 'coordenadas', { max: 255 }),
+        errorTexto(l.obs_back, 'obs_back', { max: 2000 }),
       ]);
       if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
     }
@@ -125,10 +134,11 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         : '[]';
 
       const [result] = await db.query(`
-        INSERT INTO leads (campana, distrito, n1, n2, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        l.campana||'', l.distrito||'', l.n1, l.n2||null, l.tipif_back||'',
+        l.campana||'', l.distrito||'', l.n1, l.n2||null,
+        l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', l.tipif_back||'',
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial
       ]);
       ids.push(result.insertId);
@@ -150,6 +160,37 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
   }
 });
 
+// PATCH /api/leads/:id/datos-back
+// Datos descriptivos que Back Office prepara para el asesor.
+router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
+  try {
+    const { tipo_contacto, direccion, coordenadas, obs_back } = req.body;
+    const errores = validar([
+      errorTexto(tipo_contacto, 'tipo_contacto', { max: 20 }),
+      errorTexto(direccion, 'direccion', { max: 1000 }),
+      errorTexto(coordenadas, 'coordenadas', { max: 255 }),
+      errorTexto(obs_back, 'obs_back', { max: 2000 }),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+
+    const campos = [];
+    const valores = [];
+    if (tipo_contacto !== undefined) { campos.push('tipo_contacto=?'); valores.push(tipo_contacto || 'LLAMADA'); }
+    if (direccion     !== undefined) { campos.push('direccion=?');     valores.push(direccion || ''); }
+    if (coordenadas   !== undefined) { campos.push('coordenadas=?');   valores.push(coordenadas || ''); }
+    if (obs_back      !== undefined) { campos.push('obs_back=?');      valores.push(obs_back || ''); }
+    if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'No hay datos para actualizar' });
+
+    valores.push(req.params.id);
+    const [result] = await db.query(`UPDATE leads SET ${campos.join(', ')} WHERE id=?`, valores);
+    if (!result.affectedRows) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    res.json({ ok: true, mensaje: 'Datos de Back Office guardados' });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al guardar datos de Back Office' });
+  }
+});
+
 // PATCH /api/leads/:id
 router.patch('/:id', auth(ROLES_BO), async (req, res) => {
   try {
@@ -165,6 +206,15 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     const lead = rows[0];
+
+    // Defensa del servidor: aunque un cliente antiguo o una selección pendiente
+    // intente reasignarlo, estos números nunca pueden recibir otro asesor.
+    if (asesor_nombre && tipificacionProhibida(lead.tipif_vend)) {
+      return res.status(409).json({
+        ok: false,
+        mensaje: `Número prohibido: ${String(lead.tipif_vend).toUpperCase()}`,
+      });
+    }
 
     let asesorId = null;
     let asesorNombreReal = '';

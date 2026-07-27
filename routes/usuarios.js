@@ -9,10 +9,10 @@ const auth    = require('../middleware/auth');
 const { validar, errorTexto, errorEnum, errorPermisos, GENERO_OK } = require('../middleware/validar');
 
 const ROLES = ['jefatura','usuarios'];
-const CARGOS_VALIDOS = ['jefatura','usuarios','supervisor','backoffice','asesor','validacion','grabaciones','seguimiento','programacion','supgrabaciones'];
+const CARGOS_VALIDOS = ['jefatura','usuarios','supervisor','backoffice','asesor','validacion','grabaciones','seguimiento','programacion','supgrabaciones','backreclutamiento','asesorreclutamiento'];
 
 // GET todos
-router.get('/', auth(['jefatura','usuarios','backoffice','supervisor']), async (req, res) => {
+router.get('/', auth(['jefatura','usuarios','backoffice','supervisor','backreclutamiento']), async (req, res) => {
   try {
     const [lista] = await db.query(`
       SELECT id, nombre, usuario, cargo, sala, genero, activo, permisos, created_at

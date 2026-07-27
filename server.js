@@ -64,6 +64,8 @@ app.use('/api/usuarios', require('./routes/usuarios'));
 app.use('/api/ventas', require('./routes/ventas'));
 app.use('/api/frases', require('./routes/frases'));
 app.use('/api/leads', require('./routes/leads'));
+app.use('/api/leads-reclutamiento', require('./routes/leads-reclutamiento'));
+app.use('/api/ventas-reclutamiento', require('./routes/ventas-reclutamiento'));
 
 const db = require('./database');
 app.get('/api/health', auth([]), async (req, res) => {

@@ -8,8 +8,9 @@ const fs       = require('fs');
 const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositivo, errorId, errorEnum, TIPO_DOC_OK } = require('../middleware/validar');
 
 const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
-const ESTADOS_GRAB_OK    = ['pendiente','grabado','observado','revisado'];
+const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon_voz'];
 const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado'];
+const TRAMOS_SEGUIMIENTO_OK = ['AM 1','AM 2','PM 1','PM 2','PM 3'];
 const ESTADOS_VALIDOS_POST  = ['VENTA'];
 const ESTADOS_VALIDOS_PATCH = [
   'VENTA','GRABADO','APROBADO','VALIDADO','EN_EJECUCION',
@@ -17,6 +18,7 @@ const ESTADOS_VALIDOS_PATCH = [
   'PROGRAMADO','PENDIENTE','BLOQUEADO','SIN_AGENDA',
   'CARACTER_ESPECIAL','FRAUDE','ZONA_RESTRINGIDA',
   'ANULADA','OBSERVADA','REPROGRAMADA','NO CONTACTO','RECHAZADA',
+  'NO_DESEA','NO_CONTESTA','SERVICIO_ACTIVO','BUZON_VOZ','CORTA_LLAMADA',
 ];
 
 // ===== MULTER AUDIO =====
@@ -141,7 +143,11 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
 
-    let sql = `SELECT v.*, u.nombre as asesor_nombre, u.sala FROM ventas v LEFT JOIN usuarios u ON v.asesor_id = u.id WHERE 1=1`;
+    let sql = `SELECT v.*, u.nombre as asesor_nombre, u.sala, g.nombre as grabando_por_nombre
+               FROM ventas v
+               LEFT JOIN usuarios u ON v.asesor_id = u.id
+               LEFT JOIN usuarios g ON v.grabando_por_id = g.id
+               WHERE 1=1`;
     const params = [];
 
     if (req.user.cargo === 'asesor') {
@@ -205,6 +211,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       obs_programacion, obs_validacion,
       obs_supgrab, estado_supgrab,
       estado_grab,
+      obs_seguimiento, tramo_seguimiento, motivo_seguimiento,
       // audio_path no se acepta aquí — solo se actualiza vía POST /:id/audio
     } = req.body;
 
@@ -229,12 +236,17 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     if (estado_supgrab !== undefined && !ESTADOS_SUPGRAB_OK.includes(String(estado_supgrab).toLowerCase()))
       return res.status(400).json({ ok: false, mensaje: 'estado_supgrab inválido' });
 
+    if (tramo_seguimiento !== undefined && tramo_seguimiento !== '' && !TRAMOS_SEGUIMIENTO_OK.includes(tramo_seguimiento))
+      return res.status(400).json({ ok: false, mensaje: 'tramo_seguimiento inválido' });
+
     const errObs = validar([
       errorTexto(obs_backoffice,   'obs_backoffice',   { max: 1000 }),
       errorTexto(observacion,      'observacion',      { max: 1000 }),
       errorTexto(obs_programacion, 'obs_programacion', { max: 1000 }),
       errorTexto(obs_validacion,   'obs_validacion',   { max: 1000 }),
       errorTexto(obs_supgrab,      'obs_supgrab',      { max: 1000 }),
+      errorTexto(obs_seguimiento,    'obs_seguimiento',    { max: 1000 }),
+      errorTexto(motivo_seguimiento, 'motivo_seguimiento', { max: 150 }),
     ]);
     if (errObs) return res.status(400).json({ ok: false, mensaje: errObs[0] });
 
@@ -247,6 +259,26 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     if (obs_supgrab      !== undefined) { campos.push('obs_supgrab = ?');      vals.push(obs_supgrab); }
     if (estado_supgrab   !== undefined) { campos.push('estado_supgrab = ?');   vals.push(estado_supgrab); }
     if (estado_grab      !== undefined) { campos.push('estado_grab = ?');      vals.push(estado_grab); }
+    if (obs_seguimiento    !== undefined) { campos.push('obs_seguimiento = ?');    vals.push(obs_seguimiento); }
+    if (tramo_seguimiento  !== undefined) { campos.push('tramo_seguimiento = ?');  vals.push(tramo_seguimiento); }
+    if (motivo_seguimiento !== undefined) { campos.push('motivo_seguimiento = ?'); vals.push(motivo_seguimiento); }
+
+    // Responsable de "GRABANDO": SIEMPRE server-side desde el usuario
+    // autenticado del token. grabando_por_id NUNCA se lee de req.body — el
+    // frontend no puede enviarlo, y aunque lo enviara, arriba no se
+    // desestructura, así que se ignora.
+    // COALESCE = atómico: solo se fija la primera vez (columna en NULL).
+    // La devolución de Super de Grabaciones (observado) envía SIEMPRE
+    // estado_grab:'grabando' junto con estado_supgrab:'observado' en el
+    // mismo PATCH (ver SupGrabaciones.jsx guardarRevision) — se detecta por
+    // esa combinación, no por el cargo del usuario (un cargo con permiso
+    // delegado de supgrabaciones podría no coincidir con el check de rol).
+    // Así, en el caso borde de una venta histórica sin responsable
+    // registrado, jamás queda atribuida a quien la está revisando.
+    const esDevolucionSuper = estado_supgrab !== undefined && String(estado_supgrab).toLowerCase() === 'observado';
+    if (estado_grab !== undefined && String(estado_grab).toLowerCase() === 'grabando' && !esDevolucionSuper) {
+      campos.push('grabando_por_id = COALESCE(grabando_por_id, ?)'); vals.push(req.user.id);
+    }
 
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
 
@@ -256,6 +288,92 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar venta' });
+  }
+});
+
+// Parsea líneas de historial con formato "[dd/mm/yyyy, hh:mm - usuario] texto"
+// (mismo formato que ya generan Validacion.jsx y SupGrabaciones.jsx al hacer
+// append de cada tipificación). Devuelve fecha en "YYYY-MM-DD HH:MM:00" para
+// que el frontend (textoFecha en VentaAssignmentModal.jsx) la formatee igual
+// que un DATETIME real de MySQL. Líneas que no calcen con el formato se
+// ignoran — no se les inventa fecha.
+const RE_LINEA_HISTORIAL = /^\[(\d{2})\/(\d{2})\/(\d{4}),?\s+(\d{2}):(\d{2})\s*-\s*(.+?)\]\s*(.*)$/;
+function parsearLineasHistorial(texto, modulo) {
+  const eventos = [];
+  for (const linea of String(texto || '').split('\n')) {
+    const m = linea.trim().match(RE_LINEA_HISTORIAL);
+    if (!m) continue;
+    const [, dd, mm, yyyy, hh, min, usuario, mensaje] = m;
+    if (Number(mm) < 1 || Number(mm) > 12 || Number(dd) < 1 || Number(dd) > 31 || Number(hh) > 23 || Number(min) > 59) continue;
+    eventos.push({
+      id: `${modulo}-${yyyy}${mm}${dd}${hh}${min}-${eventos.length}`,
+      tipo: 'actualizacion',
+      modulo,
+      usuario_cargo: modulo === 'Validación' ? 'validacion' : 'supgrabaciones',
+      usuario_nombre: usuario.trim(),
+      usuario_sala: null,
+      created_at: `${yyyy}-${mm}-${dd} ${hh}:${min}:00`,
+      etiqueta: mensaje.trim() || 'Actualización',
+      valor_anterior: null,
+      valor_nuevo: null,
+      descripcion: null,
+    });
+  }
+  return eventos;
+}
+
+// ===== GET /api/ventas/:id/historial =====
+// Auditoría consolidada de la venta con datos REALMENTE persistidos:
+// creación + historial real de Validación (obs_validacion) + historial real
+// de Super Grabaciones (obs_supgrab). Grabaciones/Programación/Seguimiento
+// y reasignaciones NO tienen historial persistido todavía (solo guardan el
+// último valor) — no se inventan fechas para ellos, ver CLAUDE.md/tarea.
+router.get('/:id/historial', auth(['jefatura', 'supervisor']), async (req, res) => {
+  try {
+    const errId = errorId(req.params.id, 'id');
+    if (errId) return res.status(400).json({ ok: false, mensaje: errId });
+
+    const [rows] = await db.query(`
+      SELECT v.id, v.nombre, v.created_at, v.obs_validacion, v.obs_supgrab,
+             v.asesor_id, u.sala AS asesor_sala, u.nombre AS asesor_nombre
+      FROM ventas v
+      LEFT JOIN usuarios u ON v.asesor_id = u.id
+      WHERE v.id = ?
+    `, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
+    const v = rows[0];
+
+    // Jefatura (cargo principal o delegado vía permisos) ve todo. Cualquier
+    // otro cargo que llegue aquí solo puede hacerlo como 'supervisor'
+    // (único otro permitido en auth() de esta ruta) y se restringe a su
+    // propia sala — denegado por defecto si la venta no tiene sala conocida.
+    const esJefatura = req.user.cargo === 'jefatura' || (req.user.permisos || []).includes('jefatura');
+    if (!esJefatura && v.asesor_sala !== req.user.sala) {
+      return res.status(403).json({ ok: false, mensaje: 'No puedes ver el historial de ventas de otra sala' });
+    }
+
+    const eventos = [
+      {
+        id: `creacion-${v.id}`,
+        tipo: 'creacion',
+        modulo: 'Creación',
+        usuario_cargo: 'sistema',
+        usuario_nombre: 'No registrado',
+        usuario_sala: null,
+        created_at: v.created_at,
+        etiqueta: 'Venta creada',
+        valor_anterior: null,
+        valor_nuevo: null,
+        descripcion: `Asesor actualmente asignado: ${v.asesor_nombre || 'Sin asignar'}. El asesor original no quedó registrado si la venta fue reasignada.`,
+      },
+      ...parsearLineasHistorial(v.obs_validacion, 'Validación'),
+      ...parsearLineasHistorial(v.obs_supgrab, 'Super Grabaciones'),
+    ].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+
+    res.json({ ok: true, data: eventos });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener historial' });
   }
 });
 

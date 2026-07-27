@@ -3,7 +3,20 @@
 *.sqlite-shm
 *.sqlite-wal
 .env
+.env.*
+!.env.example
 uploads/
+audios/
+fotos/
+
+# Credenciales y llaves
+credentials*.json
+*service-account*.json
+*service_account*.json
+*.pem
+*.key
+*.p12
+*.pfx
 *.log
 npm-debug.log*
 .DS_Store
