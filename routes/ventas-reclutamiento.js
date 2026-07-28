@@ -184,14 +184,15 @@ router.delete('/:id', auth(ROLES_ADMIN), async (req, res) => {
     await db.query(`DELETE FROM ventas_reclutamiento WHERE id = ?`, [req.params.id]);
     await db.query(
       `INSERT INTO eliminaciones
-        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle)
-       VALUES (?, ?, ?, 'POSTULANTE', ?, ?)`,
+        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, snapshot_json)
+       VALUES (?, ?, ?, 'POSTULANTE', ?, ?, ?)`,
       [
         req.user.id,
         actor.nombre || 'Usuario',
         actor.cargo || req.user.cargo || '',
         String(req.params.id),
         `${existente.nombre || 'Sin nombre'} · DNI ${existente.dni || '—'} · Campaña ${existente.campana || '—'}`,
+        JSON.stringify(existente),
       ]
     );
 

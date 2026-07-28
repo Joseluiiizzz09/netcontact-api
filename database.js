@@ -288,11 +288,14 @@ async function initDB() {
         tipo         VARCHAR(50)  NOT NULL,
         registro_id  VARCHAR(50)  NOT NULL,
         detalle      TEXT,
+        snapshot_json LONGTEXT NULL,
         created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_eliminaciones_fecha (created_at),
         INDEX idx_eliminaciones_actor (actor_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+    await conn.query(`ALTER TABLE eliminaciones ADD COLUMN snapshot_json LONGTEXT NULL`)
+      .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
 
     // Responsable de "GRABANDO" en Grabaciones — columna independiente del
     // estado_grab (que se mantiene únicamente en {"grabando"}), nullable

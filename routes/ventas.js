@@ -100,7 +100,7 @@ async function obtenerActor(conn, userId) {
 
 async function obtenerVentaConAsesor(conn, ventaId, bloquear = false) {
   const [rows] = await conn.query(`
-    SELECT v.id, v.asesor_id, v.asesor_nombre,
+    SELECT v.*,
            u.nombre AS asesor_actual_nombre, u.sala AS asesor_actual_sala
       FROM ventas v
       LEFT JOIN usuarios u ON u.id = v.asesor_id
@@ -678,14 +678,15 @@ router.delete('/:id', auth(['supervisor','jefatura']), async (req, res) => {
     await db.query(`DELETE FROM ventas WHERE id = ?`, [req.params.id]);
     await db.query(
       `INSERT INTO eliminaciones
-        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle)
-       VALUES (?, ?, ?, 'VENTA', ?, ?)`,
+        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, snapshot_json)
+       VALUES (?, ?, ?, 'VENTA', ?, ?, ?)`,
       [
         actor.id,
         actor.nombre || 'Usuario',
         actor.cargo || '',
         String(req.params.id),
         `${venta.nombre || 'Sin nombre'} · DNI ${venta.dni || '—'} · Asesor ${venta.asesor_nombre || '—'}`,
+        JSON.stringify(venta),
       ]
     );
     res.json({ ok: true, mensaje: 'Venta eliminada' });

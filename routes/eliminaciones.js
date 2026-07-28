@@ -6,7 +6,8 @@ const auth = require('../middleware/auth');
 router.get('/', auth(['jefatura']), async (_req, res) => {
   try {
     const [data] = await db.query(`
-      SELECT id, actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, created_at
+      SELECT id, actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle,
+             snapshot_json, created_at
       FROM eliminaciones
       ORDER BY created_at DESC, id DESC
       LIMIT 500
