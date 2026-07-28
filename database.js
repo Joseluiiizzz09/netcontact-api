@@ -278,6 +278,22 @@ async function initDB() {
       await conn.query(`CREATE INDEX idx_vr_dni ON ventas_reclutamiento(dni)`);
     }
 
+    // Auditoría persistente de eliminaciones visibles desde Jefatura.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS eliminaciones (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        actor_id     INT NULL,
+        actor_nombre VARCHAR(150) NOT NULL,
+        actor_cargo  VARCHAR(50)  DEFAULT '',
+        tipo         VARCHAR(50)  NOT NULL,
+        registro_id  VARCHAR(50)  NOT NULL,
+        detalle      TEXT,
+        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_eliminaciones_fecha (created_at),
+        INDEX idx_eliminaciones_actor (actor_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
     // Responsable de "GRABANDO" en Grabaciones — columna independiente del
     // estado_grab (que se mantiene únicamente en {"grabando"}), nullable
     // para no romper ventas históricas. Se setea siempre server-side desde

@@ -169,4 +169,37 @@ router.patch('/:id', auth(ROLES_ALL), async (req, res) => {
   }
 });
 
+// DELETE /api/ventas-reclutamiento/:id — sólo administración de Reclutamiento/Jefatura.
+router.delete('/:id', auth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const existente = await resolverPostulante(req.params.id);
+    if (!existente) return res.status(404).json({ ok: false, mensaje: 'Postulante no encontrado' });
+
+    const [actores] = await db.query(
+      `SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`,
+      [req.user.id]
+    );
+    const actor = actores[0] || {};
+
+    await db.query(`DELETE FROM ventas_reclutamiento WHERE id = ?`, [req.params.id]);
+    await db.query(
+      `INSERT INTO eliminaciones
+        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle)
+       VALUES (?, ?, ?, 'POSTULANTE', ?, ?)`,
+      [
+        req.user.id,
+        actor.nombre || 'Usuario',
+        actor.cargo || req.user.cargo || '',
+        String(req.params.id),
+        `${existente.nombre || 'Sin nombre'} · DNI ${existente.dni || '—'} · Campaña ${existente.campana || '—'}`,
+      ]
+    );
+
+    res.json({ ok: true, mensaje: 'Postulante eliminado' });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al eliminar postulante' });
+  }
+});
+
 module.exports = router;

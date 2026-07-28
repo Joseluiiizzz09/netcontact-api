@@ -676,6 +676,18 @@ router.delete('/:id', auth(['supervisor','jefatura']), async (req, res) => {
     }
 
     await db.query(`DELETE FROM ventas WHERE id = ?`, [req.params.id]);
+    await db.query(
+      `INSERT INTO eliminaciones
+        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle)
+       VALUES (?, ?, ?, 'VENTA', ?, ?)`,
+      [
+        actor.id,
+        actor.nombre || 'Usuario',
+        actor.cargo || '',
+        String(req.params.id),
+        `${venta.nombre || 'Sin nombre'} · DNI ${venta.dni || '—'} · Asesor ${venta.asesor_nombre || '—'}`,
+      ]
+    );
     res.json({ ok: true, mensaje: 'Venta eliminada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al eliminar venta' });
