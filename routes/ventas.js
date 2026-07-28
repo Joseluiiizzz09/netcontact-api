@@ -235,10 +235,22 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
 
-    let sql = `SELECT v.*, u.nombre as asesor_nombre, u.sala, g.nombre as grabando_por_nombre
+    // fecha_programado: momento real (venta_historial) en que Programación
+    // puso estado=PROGRAMADO — no la hora del servidor. Agregado en una sola
+    // subconsulta agrupada (no una consulta por fila) para que Super de
+    // Grabaciones pueda mostrar "PROGRAMADO: HH:mm / DD/MM/YYYY" cuando el
+    // audio todavía no está subido.
+    let sql = `SELECT v.*, u.nombre as asesor_nombre, u.sala, g.nombre as grabando_por_nombre,
+               ph.fecha_programado
                FROM ventas v
                LEFT JOIN usuarios u ON v.asesor_id = u.id
                LEFT JOIN usuarios g ON v.grabando_por_id = g.id
+               LEFT JOIN (
+                 SELECT venta_id, MAX(created_at) AS fecha_programado
+                 FROM venta_historial
+                 WHERE campo = 'estado' AND UPPER(valor_nuevo) = 'PROGRAMADO'
+                 GROUP BY venta_id
+               ) ph ON ph.venta_id = v.id
                WHERE 1=1`;
     const params = [];
 
