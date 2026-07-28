@@ -70,6 +70,8 @@ async function initDB() {
         obs_backoffice   TEXT,
         observacion      TEXT,
         obs_programacion TEXT,
+        sot              VARCHAR(100),
+        fecha_programada DATE,
         obs_validacion   TEXT,
         obs_supgrab      TEXT,
         estado_supgrab   VARCHAR(50),
@@ -329,6 +331,17 @@ async function initDB() {
       ['motivo_seguimiento', 'VARCHAR(150) NULL'],
     ];
     for (const [columna, definicion] of columnasSeguimiento) {
+      await conn.query(`ALTER TABLE ventas ADD COLUMN ${columna} ${definicion}`)
+        .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    }
+
+    // Programación: datos operativos requeridos al marcar una venta como
+    // PROGRAMADO. Nullable para conservar ventas históricas.
+    const columnasProgramacion = [
+      ['sot',              'VARCHAR(100) NULL'],
+      ['fecha_programada', 'DATE NULL'],
+    ];
+    for (const [columna, definicion] of columnasProgramacion) {
       await conn.query(`ALTER TABLE ventas ADD COLUMN ${columna} ${definicion}`)
         .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
     }

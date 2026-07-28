@@ -17,7 +17,7 @@ const ESTADOS_VALIDOS_PATCH = [
   'INSTALADO','CAIDA','RECHAZO_CAMPO','TECNICO_CASA',
   'PROGRAMADO','PENDIENTE','BLOQUEADO','SIN_AGENDA',
   'CARACTER_ESPECIAL','FRAUDE','ZONA_RESTRINGIDA',
-  'ANULADA','OBSERVADA','REPROGRAMADA','NO CONTACTO','RECHAZADA',
+  'ANULADA','OBSERVADA','REPROGRAMADA','NO CONTACTO','RECHAZADA','RECHAZADO',
   'NO_DESEA','NO_CONTESTA','SERVICIO_ACTIVO','BUZON_VOZ','CORTA_LLAMADA',
 ];
 const ESTADOS_PROGRAMACION = [
@@ -133,6 +133,8 @@ const CAMPOS_HISTORIAL = {
   obs_backoffice: 'Observación de Back Data',
   observacion: 'Observación general',
   obs_programacion: 'Observación de Programación',
+  sot: 'SOT',
+  fecha_programada: 'Fecha programada',
   obs_validacion: 'Observación de Validación',
   obs_supgrab: 'Observación de Supervisión de grabaciones',
   estado_supgrab: 'Revisión de la grabación',
@@ -256,7 +258,9 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
       // Programacion.jsx, que muestra estas filas como GRABADO) — aquí se
       // agrega la misma condición para que esas filas realmente lleguen.
       sql += ` AND (UPPER(v.estado) IN (${ESTADOS_PROGRAMACION.map(() => '?').join(',')})
-                OR (UPPER(v.estado) = 'VALIDADO' AND LOWER(v.estado_grab) = 'grabado' AND LOWER(v.estado_supgrab) = 'aprobado'))`;
+                OR (UPPER(v.estado) = 'VALIDADO'
+                    AND LOWER(v.estado_grab) = 'grabado'
+                    AND LOWER(COALESCE(v.estado_supgrab, 'sin_revisar')) IN ('sin_revisar', 'aprobado', 'rechazado')))`;
       params.push(...ESTADOS_PROGRAMACION);
     }
 
@@ -426,7 +430,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
   try {
     const {
       estado, obs_backoffice, observacion,
-      obs_programacion, obs_validacion,
+      obs_programacion, sot, fecha_programada, obs_validacion,
       obs_supgrab, estado_supgrab,
       estado_grab,
       obs_seguimiento, tramo_seguimiento, motivo_seguimiento,
@@ -435,7 +439,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
 
     const [rows] = await conn.query(`
       SELECT id, asesor_id, estado, obs_backoffice, observacion,
-             obs_programacion, obs_validacion, obs_supgrab,
+             obs_programacion, sot, fecha_programada, obs_validacion, obs_supgrab,
              estado_supgrab, estado_grab, obs_seguimiento,
              tramo_seguimiento, motivo_seguimiento
         FROM ventas
@@ -468,6 +472,8 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       errorTexto(obs_backoffice,   'obs_backoffice',   { max: 1000 }),
       errorTexto(observacion,      'observacion',      { max: 1000 }),
       errorTexto(obs_programacion, 'obs_programacion', { max: 1000 }),
+      errorTexto(sot,              'sot',              { max: 100 }),
+      errorFecha(fecha_programada, 'fecha_programada'),
       errorTexto(obs_validacion,   'obs_validacion',   { max: 1000 }),
       errorTexto(obs_supgrab,      'obs_supgrab',      { max: 1000 }),
       errorTexto(obs_seguimiento,    'obs_seguimiento',    { max: 1000 }),
@@ -489,6 +495,8 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     agregarCambio('obs_backoffice', obs_backoffice);
     agregarCambio('observacion', observacion);
     agregarCambio('obs_programacion', obs_programacion);
+    agregarCambio('sot', sot);
+    agregarCambio('fecha_programada', fecha_programada);
     agregarCambio('obs_validacion', obs_validacion);
     agregarCambio('obs_supgrab', obs_supgrab);
     agregarCambio('estado_supgrab', estado_supgrab);
