@@ -9,7 +9,7 @@ const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositi
 
 const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
 const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz'];
-const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado'];
+const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado','programado','conforme','no_conforme'];
 const TRAMOS_SEGUIMIENTO_OK = ['AM 1','AM 2','PM 1','PM 2','PM 3'];
 const ESTADOS_VALIDOS_POST  = ['VENTA'];
 const ESTADOS_VALIDOS_PATCH = [
@@ -235,6 +235,20 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
 
+    // Vencimiento operativo: si Super de Grabaciones no responde en dos
+    // horas, vuelve automáticamente a la cola de los asesores de Grabaciones.
+    await db.query(`
+      UPDATE ventas
+         SET estado = 'VALIDADO',
+             estado_grab = 'pendiente',
+             estado_supgrab = 'no_conforme',
+             programacion_expira_at = NULL
+       WHERE UPPER(estado) = 'PROGRAMADO'
+         AND LOWER(COALESCE(estado_supgrab, '')) = 'programado'
+         AND programacion_expira_at IS NOT NULL
+         AND programacion_expira_at <= NOW()
+    `);
+
     // fecha_programado: momento real (venta_historial) en que Programación
     // puso estado=PROGRAMADO — no la hora del servidor. Agregado en una sola
     // subconsulta agrupada (no una consulta por fila) para que Super de
@@ -261,18 +275,13 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     }
 
     if (req.user.cargo === 'programacion' || programacion === '1') {
-      // Una venta aprobada por Super de Grabaciones NUNCA cambia `estado`
-      // (sigue en 'VALIDADO' — campo propio de Validación, ver comentario en
-      // SupGrabaciones.jsx guardarRevision). Por eso el filtro original
-      // (solo ESTADOS_PROGRAMACION) dejaba 0 ventas: nada transiciona nunca
-      // `estado` fuera de VALIDADO tras Grabaciones. El frontend de
-      // Programación ya asume este caso (ver estadoVisible() en
-      // Programacion.jsx, que muestra estas filas como GRABADO) — aquí se
-      // agrega la misma condición para que esas filas realmente lleguen.
+      // Las ventas que siguen en VALIDADO entran a Programación únicamente
+      // después de la aprobación explícita de Super de Grabaciones.
+      // Sin revisar, observadas o rechazadas no deben ser visibles aquí.
       sql += ` AND (UPPER(v.estado) IN (${ESTADOS_PROGRAMACION.map(() => '?').join(',')})
                 OR (UPPER(v.estado) = 'VALIDADO'
                     AND LOWER(v.estado_grab) = 'grabado'
-                    AND LOWER(COALESCE(v.estado_supgrab, 'sin_revisar')) IN ('sin_revisar', 'aprobado', 'rechazado')))`;
+                    AND LOWER(COALESCE(v.estado_supgrab, 'sin_revisar')) = 'aprobado'))`;
       params.push(...ESTADOS_PROGRAMACION);
     }
 
@@ -517,11 +526,19 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     agregarCambio('tramo_seguimiento', tramo_seguimiento);
     agregarCambio('motivo_seguimiento', motivo_seguimiento);
 
+    if (estado !== undefined && String(estado).toUpperCase() === 'PROGRAMADO') {
+      campos.push('programacion_expira_at = DATE_ADD(NOW(), INTERVAL 2 HOUR)');
+    } else if (estado_supgrab !== undefined && ['conforme', 'no_conforme'].includes(String(estado_supgrab).toLowerCase())) {
+      campos.push('programacion_expira_at = NULL');
+    }
+
     // Responsable de "GRABANDO": SIEMPRE server-side desde el usuario
     // autenticado del token. grabando_por_id NUNCA se lee de req.body — el
     // frontend no puede enviarlo, y aunque lo enviara, arriba no se
     // desestructura, así que se ignora.
-    // COALESCE = atómico: solo se fija la primera vez (columna en NULL).
+    // Cada usuario de Grabaciones que marque GRABANDO toma la venta. Así,
+    // si Brito continúa una venta que antes tenía Iris, todos verán
+    // inmediatamente "GRABANDO BRITO" en la cola compartida.
     // La devolución de Super de Grabaciones (observado) envía SIEMPRE
     // estado_grab:'grabando' junto con estado_supgrab:'observado' en el
     // mismo PATCH (ver SupGrabaciones.jsx guardarRevision) — se detecta por
@@ -531,7 +548,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     // registrado, jamás queda atribuida a quien la está revisando.
     const esDevolucionSuper = estado_supgrab !== undefined && String(estado_supgrab).toLowerCase() === 'observado';
     if (estado_grab !== undefined && String(estado_grab).toLowerCase() === 'grabando' && !esDevolucionSuper) {
-      campos.push('grabando_por_id = COALESCE(grabando_por_id, ?)'); vals.push(req.user.id);
+      campos.push('grabando_por_id = ?'); vals.push(req.user.id);
     }
 
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });

@@ -72,6 +72,7 @@ async function initDB() {
         obs_programacion TEXT,
         sot              VARCHAR(100),
         fecha_programada DATE,
+        programacion_expira_at DATETIME NULL,
         obs_validacion   TEXT,
         obs_supgrab      TEXT,
         estado_supgrab   VARCHAR(50),
@@ -340,6 +341,7 @@ async function initDB() {
     const columnasProgramacion = [
       ['sot',              'VARCHAR(100) NULL'],
       ['fecha_programada', 'DATE NULL'],
+      ['programacion_expira_at', 'DATETIME NULL'],
     ];
     for (const [columna, definicion] of columnasProgramacion) {
       await conn.query(`ALTER TABLE ventas ADD COLUMN ${columna} ${definicion}`)
