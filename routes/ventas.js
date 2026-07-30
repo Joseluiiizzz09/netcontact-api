@@ -528,6 +528,8 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
 
     if (estado !== undefined && String(estado).toUpperCase() === 'PROGRAMADO') {
       campos.push('programacion_expira_at = DATE_ADD(NOW(), INTERVAL 2 HOUR)');
+    } else if (estado !== undefined && String(estado).toUpperCase() === 'PENDIENTE') {
+      campos.push('programacion_expira_at = NULL');
     } else if (estado_supgrab !== undefined && ['conforme', 'no_conforme'].includes(String(estado_supgrab).toLowerCase())) {
       campos.push('programacion_expira_at = NULL');
     }
