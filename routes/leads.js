@@ -207,6 +207,72 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
   }
 });
 
+// POST /api/leads/:id/rotar
+// Conserva el lead y la tipificacion del asesor anterior, y crea una copia
+// limpia para el nuevo asesor con estado NUEVO.
+router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
+  let conn;
+  try {
+    const { asesor_nombre, motivo } = req.body;
+    if (!asesor_nombre?.trim()) {
+      return res.status(400).json({ ok: false, mensaje: 'Selecciona el nuevo asesor' });
+    }
+
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const [leads] = await conn.query(`SELECT * FROM leads WHERE id = ? FOR UPDATE`, [req.params.id]);
+    if (!leads.length) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    }
+    const lead = leads[0];
+    if (tipificacionProhibida(lead.tipif_vend)) {
+      await conn.rollback();
+      return res.status(409).json({ ok: false, mensaje: `Numero prohibido: ${String(lead.tipif_vend).toUpperCase()}` });
+    }
+
+    const [usuarios] = await conn.query(`SELECT id, nombre FROM usuarios WHERE nombre = ? AND activo = 1 LIMIT 1`, [asesor_nombre.trim()]);
+    if (!usuarios.length) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, mensaje: 'Asesor no encontrado o inactivo' });
+    }
+    const asesor = usuarios[0];
+    if (lead.asesor_id === asesor.id) {
+      await conn.rollback();
+      return res.status(409).json({ ok: false, mensaje: 'Selecciona un asesor diferente al actual' });
+    }
+
+    let historial = [];
+    try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
+    const fecha = fechaPeruHoy();
+    const hora = horaPeruAhora();
+    historial.push({ asesor: asesor.nombre, hora, fecha, motivo: String(motivo || '').trim() || 'Rotacion manual' });
+
+    const [result] = await conn.query(`
+      INSERT INTO leads (
+        campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back,
+        tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre,
+        fecha, hora_asig, rotaciones, sin_asignar, tipif_vend, tipif_hora,
+        obs_asesor, historial
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', ?, ?, ?, ?, ?, 0, '', '', '', ?)
+    `, [
+      lead.campana || '', lead.distrito || '', lead.n1, lead.n2 || null,
+      lead.tipo_contacto || 'LLAMADA', lead.direccion || '', lead.coordenadas || '', lead.obs_back || '',
+      asesor.id, asesor.nombre, fecha, hora, (lead.rotaciones || 0) + 1, JSON.stringify(historial),
+    ]);
+
+    await conn.commit();
+    res.json({ ok: true, id: result.insertId, asesor: asesor.nombre, mensaje: `Registro rotado a ${asesor.nombre}` });
+  } catch (e) {
+    if (conn) await conn.rollback().catch(() => {});
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al rotar el lead' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 // PATCH /api/leads/:id
 router.patch('/:id', auth(ROLES_BO), async (req, res) => {
   try {
