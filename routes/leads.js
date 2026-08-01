@@ -278,24 +278,77 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
 
 // DELETE /api/leads/:id
 router.delete('/:id', auth(ROLES_BO), async (req, res) => {
+  let conn;
   try {
-    await db.query(`DELETE FROM leads WHERE id = ?`, [req.params.id]);
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+    const [rows] = await conn.query(`
+      SELECT l.*, u.nombre AS asesor_nombre_db
+      FROM leads l LEFT JOIN usuarios u ON u.id = l.asesor_id
+      WHERE l.id = ? FOR UPDATE
+    `, [req.params.id]);
+    if (!rows.length) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    }
+    const [actores] = await conn.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+    const lead = rows[0];
+    const actor = actores[0] || {};
+    await conn.query(`DELETE FROM leads WHERE id = ?`, [req.params.id]);
+    await conn.query(
+      `INSERT INTO eliminaciones
+        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, snapshot_json)
+       VALUES (?, ?, ?, 'NUMERO_BACKDATA', ?, ?, ?)`,
+      [req.user.id, actor.nombre || 'Usuario', actor.cargo || req.user.cargo || '', String(req.params.id),
+        `N1 ${lead.n1 || '—'} · N2 ${lead.n2 || '—'} · Asesor ${lead.asesor_nombre_db || lead.asesor_nombre || 'Sin asignar'} · Fecha ${lead.fecha || '—'}`,
+        JSON.stringify(lead)]
+    );
+    await conn.commit();
     res.json({ ok: true, mensaje: 'Lead eliminado' });
   } catch(e) {
+    if (conn) await conn.rollback().catch(() => {});
+    console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al eliminar lead' });
+  } finally {
+    conn?.release();
   }
 });
 
 // DELETE /api/leads/fecha/:fecha
 router.delete('/fecha/:fecha', auth(ROLES_BO), async (req, res) => {
+  let conn;
   try {
+    conn = await db.getConnection();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.fecha))
       return res.status(400).json({ ok: false, mensaje: 'Formato de fecha inválido. Usa YYYY-MM-DD' });
 
-    const [result] = await db.query(`DELETE FROM leads WHERE fecha = ?`, [req.params.fecha]);
+    await conn.beginTransaction();
+    const [leads] = await conn.query(`
+      SELECT l.*, u.nombre AS asesor_nombre_db
+      FROM leads l LEFT JOIN usuarios u ON u.id = l.asesor_id
+      WHERE l.fecha = ? FOR UPDATE
+    `, [req.params.fecha]);
+    const [actores] = await conn.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+    const actor = actores[0] || {};
+    const [result] = await conn.query(`DELETE FROM leads WHERE fecha = ?`, [req.params.fecha]);
+    for (const lead of leads) {
+      await conn.query(
+        `INSERT INTO eliminaciones
+          (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, snapshot_json)
+         VALUES (?, ?, ?, 'NUMERO_BACKDATA', ?, ?, ?)`,
+        [req.user.id, actor.nombre || 'Usuario', actor.cargo || req.user.cargo || '', String(lead.id),
+          `N1 ${lead.n1 || '—'} · N2 ${lead.n2 || '—'} · Asesor ${lead.asesor_nombre_db || lead.asesor_nombre || 'Sin asignar'} · Fecha ${lead.fecha || '—'}`,
+          JSON.stringify(lead)]
+      );
+    }
+    await conn.commit();
     res.json({ ok: true, eliminados: result.affectedRows });
   } catch(e) {
+    if (conn) await conn.rollback().catch(() => {});
+    console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al eliminar leads' });
+  } finally {
+    conn?.release();
   }
 });
 
