@@ -205,12 +205,35 @@ router.patch('/:id/datos-back', auth(ROLES_BACK), async (req, res) => {
 
 // DELETE /api/leads-reclutamiento/:id
 router.delete('/:id', auth(ROLES_BACK), async (req, res) => {
+  let conn;
   try {
-    await db.query(`DELETE FROM leads_reclutamiento WHERE id = ?`, [req.params.id]);
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+    const [rows] = await conn.query(`SELECT * FROM leads_reclutamiento WHERE id = ? FOR UPDATE`, [req.params.id]);
+    if (!rows.length) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, mensaje: 'Candidato no encontrado' });
+    }
+    const [actores] = await conn.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+    const lead = rows[0];
+    const actor = actores[0] || {};
+    await conn.query(`DELETE FROM leads_reclutamiento WHERE id = ?`, [req.params.id]);
+    await conn.query(
+      `INSERT INTO eliminaciones
+        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, snapshot_json)
+       VALUES (?, ?, ?, 'NUMERO_RECLUTAMIENTO', ?, ?, ?)`,
+      [req.user.id, actor.nombre || 'Usuario', actor.cargo || req.user.cargo || '', String(req.params.id),
+        `N1 ${lead.n1 || '—'} · N2 ${lead.n2 || '—'} · Asesor ${lead.asesor_nombre || 'Sin asignar'} · Fecha ${lead.fecha || '—'}`,
+        JSON.stringify(lead)]
+    );
+    await conn.commit();
     res.json({ ok: true, mensaje: 'Candidato eliminado' });
   } catch(e) {
+    if (conn) await conn.rollback().catch(() => {});
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al eliminar candidato' });
+  } finally {
+    conn?.release();
   }
 });
 
