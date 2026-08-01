@@ -18,21 +18,26 @@ router.get('/', auth(['jefatura']), async (_req, res) => {
   }
 });
 
-// DELETE /api/eliminaciones — limpieza total del historial, solo Jefatura.
-router.delete('/', auth(['jefatura']), async (req, res) => {
+// DELETE /api/eliminaciones/:id - elimina un registro de auditoria, solo Jefatura.
+router.delete('/:id', auth(['jefatura']), async (req, res) => {
   try {
-    if (req.body?.confirmacion !== 'ELIMINAR') {
-      return res.status(400).json({ ok: false, mensaje: 'Confirmación inválida' });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ ok: false, mensaje: 'ID inválido' });
     }
-    const [result] = await db.query(`DELETE FROM eliminaciones`);
+
+    const [result] = await db.query(`DELETE FROM eliminaciones WHERE id = ?`, [id]);
+    if (!result.affectedRows) {
+      return res.status(404).json({ ok: false, mensaje: 'Registro no encontrado' });
+    }
+
     res.json({
       ok: true,
-      eliminados: result.affectedRows,
-      mensaje: `${result.affectedRows} registro(s) de eliminación borrado(s)`,
+      mensaje: 'Registro eliminado del historial',
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ ok: false, mensaje: 'Error al limpiar el historial de eliminaciones' });
+    res.status(500).json({ ok: false, mensaje: 'Error al eliminar el registro del historial' });
   }
 });
 
