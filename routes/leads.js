@@ -30,6 +30,18 @@ function normalizarN1(valor) {
   return String(valor || '').replace(/\D+/g, '');
 }
 
+function normalizarTipifBack(valor) {
+  const tipif = String(valor || '').trim().toUpperCase();
+  if (tipif === 'BUZON' || tipif === 'BUZÓN') return 'BUZON DE VOZ';
+  if (tipif === 'DER CHAMO') return 'DERIVADO';
+  return tipif;
+}
+
+async function nombreUsuario(id) {
+  const [rows] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [id]);
+  return rows[0]?.nombre || 'Usuario Back Data';
+}
+
 // GET /api/leads
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
@@ -133,12 +145,16 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaHoy, motivo: 'Asignacion inicial' }])
         : '[]';
 
+      const tipifBack = normalizarTipifBack(l.tipif_back);
+      const esDerivado = tipifBack === 'DERIVADO' && Boolean(asesorId);
+      const derivadoPorNombre = esDerivado ? await nombreUsuario(req.user.id) : '';
       const [result] = await db.query(`
-        INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         l.campana||'', l.distrito||'', l.n1, l.n2||null,
-        l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', l.tipif_back||'',
+        l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
+        esDerivado ? req.user.id : null, derivadoPorNombre,
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial
       ]);
       ids.push(result.insertId);
@@ -225,15 +241,22 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
 
     const horaReal      = hora_asig || horaPeruAhora();
     const historialJSON = historial ? JSON.stringify(historial) : lead.historial;
+    const tipifBackReal = tipif_back === undefined ? lead.tipif_back : normalizarTipifBack(tipif_back);
+    const registraDerivacion = tipifBackReal === 'DERIVADO' && Boolean(asesorId);
+    const derivadoPorNombre = registraDerivacion ? await nombreUsuario(req.user.id) : lead.derivado_por_nombre;
 
     await db.query(`
       UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,
-        sin_asignar=?, historial=?, rotaciones=rotaciones+?
+        sin_asignar=?, historial=?, rotaciones=rotaciones+?,
+        derivado_por_id=?, derivado_por_nombre=?
       WHERE id=?
     `, [
-      asesorId, asesorNombreReal, tipif_back||lead.tipif_back,
+      asesorId, asesorNombreReal, tipifBackReal,
       horaReal, asesorId?0:1, historialJSON,
-      req.body.sumarRotacion?1:0, req.params.id
+      req.body.sumarRotacion?1:0,
+      registraDerivacion ? req.user.id : lead.derivado_por_id,
+      derivadoPorNombre,
+      req.params.id
     ]);
 
     res.json({ ok: true, mensaje: 'Lead actualizado' });

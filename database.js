@@ -119,6 +119,8 @@ async function initDB() {
         coordenadas   VARCHAR(255) DEFAULT '',
         obs_back      TEXT,
         tipif_back    VARCHAR(100) DEFAULT '',
+        derivado_por_id INT NULL,
+        derivado_por_nombre VARCHAR(150) DEFAULT '',
         asesor_id     INT,
         asesor_nombre VARCHAR(150),
         fecha         DATE         NOT NULL,
@@ -297,6 +299,15 @@ async function initDB() {
         INDEX idx_eliminaciones_actor (actor_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+
+    const columnasDerivacionLeads = [
+      ['derivado_por_id', 'INT NULL'],
+      ['derivado_por_nombre', "VARCHAR(150) DEFAULT ''"],
+    ];
+    for (const [columna, definicion] of columnasDerivacionLeads) {
+      await conn.query(`ALTER TABLE leads ADD COLUMN ${columna} ${definicion}`)
+        .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    }
     await conn.query(`ALTER TABLE eliminaciones ADD COLUMN snapshot_json LONGTEXT NULL`)
       .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
 
