@@ -308,18 +308,19 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       });
     }
 
-    let asesorId = null;
-    let asesorNombreReal = '';
+    // Preserva el asesor existente cuando sólo cambia tipif_back u otros campos.
+    // Si se envía asesor_nombre, se resuelve el nuevo asesor desde la BD.
+    let asesorId = lead.asesor_id || null;
+    let asesorNombreReal = lead.asesor_nombre || '';
     if (asesor_nombre) {
       const [uRows] = await db.query(`SELECT id, nombre FROM usuarios WHERE nombre = ?`, [asesor_nombre]);
       if (uRows.length) { asesorId = uRows[0].id; asesorNombreReal = uRows[0].nombre; }
     }
 
-    const horaReal      = hora_asig || horaPeruAhora();
-    const historialJSON = historial ? JSON.stringify(historial) : lead.historial;
+    const horaReal = hora_asig || horaPeruAhora();
     const tipifBackReal = tipif_back === undefined ? lead.tipif_back : normalizarTipifBack(tipif_back);
 
-    // Actualiza derivadoPor siempre que tipif_back cambie explícitamente a DERIVADO o deje de serlo.
+    // derivadoPor lo determina el backend desde req.user — el frontend no puede falsificarlo.
     let derivadoPorId     = lead.derivado_por_id;
     let derivadoPorNombre = lead.derivado_por_nombre;
     if (tipif_back !== undefined) {
@@ -330,6 +331,19 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
         derivadoPorId     = null;
         derivadoPorNombre = '';
       }
+    }
+
+    // Historial: inyecta derivadoPor desde el usuario autenticado en la última entrada
+    // de tipo DERIVADO para que el frontend no pueda enviar un nombre falso.
+    let historialJSON;
+    if (historial) {
+      const histArr = [...historial];
+      if (tipifBackReal === 'DERIVADO' && histArr.length > 0) {
+        histArr[histArr.length - 1] = { ...histArr[histArr.length - 1], derivadoPor: derivadoPorNombre };
+      }
+      historialJSON = JSON.stringify(histArr);
+    } else {
+      historialJSON = lead.historial;
     }
 
     await db.query(`
