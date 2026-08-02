@@ -64,6 +64,7 @@ router.post('/', auth(ROLES), async (req, res) => {
 
     res.json({ ok: true, id: result.insertId, mensaje: 'Usuario creado' });
   } catch(e) {
+    console.error('[POST /usuarios]', e.message || e);
     res.status(500).json({ ok: false, mensaje: 'Error al crear usuario' });
   }
 });
@@ -120,6 +121,7 @@ router.patch('/:id', auth(ROLES), async (req, res) => {
     }
     res.json({ ok: true, mensaje: 'Usuario actualizado' });
   } catch(e) {
+    console.error('[PATCH /usuarios/:id]', e.message || e);
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar usuario' });
   }
 });
