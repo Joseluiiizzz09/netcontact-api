@@ -25,6 +25,32 @@ const ESTADOS_PROGRAMACION = [
   'FRAUDE','ZONA_RESTRINGIDA','INSTALADO','PENDIENTE','CAIDA',
 ];
 
+function fechaPeruHoy() {
+  const ahora = new Date();
+  const peru  = new Date(ahora.getTime() + ahora.getTimezoneOffset() * 60000 + (-5 * 60 * 60000));
+  return peru.getFullYear() + '-' + String(peru.getMonth() + 1).padStart(2, '0') + '-' + String(peru.getDate()).padStart(2, '0');
+}
+
+async function esTelefonoVentaCerradaHoy(db, asessorId, telefono) {
+  const hoy = fechaPeruHoy();
+  const [rows] = await db.query(
+    `SELECT id, fecha, historial FROM leads WHERE asesor_id = ? AND UPPER(tipif_vend) = 'VENTA CERRADA' AND n1 = ?`,
+    [asessorId, String(telefono)]
+  );
+  for (const l of rows) {
+    try {
+      const hist = JSON.parse(l.historial || '[]');
+      const asignaciones = hist.filter(h => h?.fecha && h?.asesor);
+      const ultima = asignaciones[asignaciones.length - 1];
+      const fechaEntry = ultima?.fecha
+        ? String(ultima.fecha).match(/^(\d{4}-\d{2}-\d{2})/)?.[1]
+        : String(l.fecha || '').match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+      if (fechaEntry === hoy) return true;
+    } catch(e) { /* skip */ }
+  }
+  return false;
+}
+
 // ===== MULTER AUDIO =====
 const audioDir = path.join(__dirname, '..', 'uploads', 'audios');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
@@ -192,6 +218,17 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       errorEnteroPositivo(v.cantMesh,  'cantMesh',  { max: 10 }),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0], errores });
+
+    if (v.telefono1 && !/^\d+$/.test(String(v.telefono1)))
+      return res.status(400).json({ ok: false, mensaje: 'El teléfono de contacto solo puede contener números.' });
+    if (v.telefono2 && !/^\d+$/.test(String(v.telefono2)))
+      return res.status(400).json({ ok: false, mensaje: 'El teléfono de referencia solo puede contener números.' });
+
+    if (req.user.cargo === 'asesor') {
+      if (!v.telefono1) return res.status(400).json({ ok: false, mensaje: 'El Teléfono Contacto es obligatorio.' });
+      const valido = await esTelefonoVentaCerradaHoy(db, req.user.id, v.telefono1);
+      if (!valido) return res.status(400).json({ ok: false, mensaje: 'El teléfono de contacto no corresponde a una VENTA CERRADA del día para este asesor.' });
+    }
 
     const estadoFinal = (v.estado || 'VENTA').toUpperCase();
     if (!ESTADOS_VALIDOS_POST.includes(estadoFinal))

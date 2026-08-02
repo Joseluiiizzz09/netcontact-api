@@ -73,6 +73,34 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
   }
 });
 
+// GET /api/leads/ventas-cerradas
+// Retorna los números del asesor autenticado con tipif_vend = 'VENTA CERRADA' para hoy (Perú).
+router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (req, res) => {
+  try {
+    const hoy = fechaPeruHoy();
+    const [rows] = await db.query(
+      `SELECT id, n1, fecha, historial FROM leads WHERE asesor_id = ? AND UPPER(tipif_vend) = 'VENTA CERRADA'`,
+      [req.user.id]
+    );
+    const data = [];
+    for (const l of rows) {
+      try {
+        const hist = JSON.parse(l.historial || '[]');
+        const asignaciones = hist.filter(h => h?.fecha && h?.asesor);
+        const ultima = asignaciones[asignaciones.length - 1];
+        const fechaEntry = ultima?.fecha
+          ? String(ultima.fecha).match(/^(\d{4}-\d{2}-\d{2})/)?.[1]
+          : String(l.fecha || '').match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+        if (fechaEntry === hoy) data.push({ n1: l.n1 });
+      } catch(e) { /* skip */ }
+    }
+    res.json({ ok: true, data });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener ventas cerradas del día' });
+  }
+});
+
 // POST /api/leads
 router.post('/', auth(ROLES_BO), async (req, res) => {
   try {
