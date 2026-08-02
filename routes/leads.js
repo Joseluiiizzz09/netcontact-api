@@ -79,7 +79,12 @@ router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (
   try {
     const hoy = fechaPeruHoy();
     const [rows] = await db.query(
-      `SELECT id, n1, fecha, historial FROM leads WHERE asesor_id = ? AND UPPER(tipif_vend) = 'VENTA CERRADA'`,
+      `SELECT id, n1, fecha, historial FROM leads
+       WHERE asesor_id = ? AND UPPER(tipif_vend) = 'VENTA CERRADA'
+       AND n1 NOT IN (
+         SELECT COALESCE(TRIM(telefono1),'') FROM ventas
+         WHERE telefono1 IS NOT NULL AND TRIM(telefono1) != ''
+       )`,
       [req.user.id]
     );
     const data = [];

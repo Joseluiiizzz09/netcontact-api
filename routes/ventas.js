@@ -228,6 +228,12 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       if (!v.telefono1) return res.status(400).json({ ok: false, mensaje: 'El Teléfono Contacto es obligatorio.' });
       const valido = await esTelefonoVentaCerradaHoy(db, req.user.id, v.telefono1);
       if (!valido) return res.status(400).json({ ok: false, mensaje: 'El teléfono de contacto no corresponde a una VENTA CERRADA del día para este asesor.' });
+      const [yaUsado] = await db.query(
+        `SELECT id FROM ventas WHERE TRIM(COALESCE(telefono1,'')) = ? LIMIT 1`,
+        [String(v.telefono1).trim()]
+      );
+      if (yaUsado.length > 0)
+        return res.status(400).json({ ok: false, mensaje: 'Este número ya fue registrado en otra venta. No puede ser usado nuevamente.' });
     }
 
     const estadoFinal = (v.estado || 'VENTA').toUpperCase();
