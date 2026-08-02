@@ -236,7 +236,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
         return res.status(400).json({ ok: false, mensaje: 'Este número ya fue registrado en otra venta. No puede ser usado nuevamente.' });
     }
 
-    const estadoFinal = (v.estado || 'VENTA').toUpperCase();
+    const estadoFinal = req.user.cargo === 'asesor' ? 'VENTA' : (v.estado || 'VENTA').toUpperCase();
     if (!ESTADOS_VALIDOS_POST.includes(estadoFinal))
       return res.status(400).json({ ok: false, mensaje: `Estado inválido al crear. Solo se permite: ${ESTADOS_VALIDOS_POST.join(', ')}` });
 
