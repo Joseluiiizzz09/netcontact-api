@@ -208,8 +208,8 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
 });
 
 // POST /api/leads/:id/rotar
-// Conserva el lead y la tipificacion del asesor anterior, y crea una copia
-// limpia para el nuevo asesor con estado NUEVO.
+// Actualiza el lead existente con el nuevo asesor (sin crear duplicados).
+// Preserva el historial completo con asesorAnterior, rotadoPor y tipifBackAntes.
 router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
   let conn;
   try {
@@ -237,33 +237,43 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       await conn.rollback();
       return res.status(404).json({ ok: false, mensaje: 'Asesor no encontrado o inactivo' });
     }
-    const asesor = usuarios[0];
-    if (lead.asesor_id === asesor.id) {
+    const asesorNuevo = usuarios[0];
+    if (lead.asesor_id === asesorNuevo.id) {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: 'Selecciona un asesor diferente al actual' });
     }
 
+    const rotadorNombre = await nombreUsuario(req.user.id);
+
     let historial = [];
     try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
     const fecha = fechaPeruHoy();
-    const hora = horaPeruAhora();
-    historial.push({ asesor: asesor.nombre, hora, fecha, motivo: String(motivo || '').trim() || 'Rotacion manual' });
+    const hora  = horaPeruAhora();
+    historial.push({
+      tipo:          'ROTACION',
+      asesor:        asesorNuevo.nombre,
+      asesorAnterior: lead.asesor_nombre || 'Sin asignar',
+      rotadoPor:     rotadorNombre,
+      tipifBackAntes: lead.tipif_back || '',
+      hora,
+      fecha,
+      motivo: String(motivo || '').trim() || 'Rotacion manual',
+    });
 
-    const [result] = await conn.query(`
-      INSERT INTO leads (
-        campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back,
-        tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre,
-        fecha, hora_asig, rotaciones, sin_asignar, tipif_vend, tipif_hora,
-        obs_asesor, historial
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', ?, ?, ?, ?, ?, 0, '', '', '', ?)
-    `, [
-      lead.campana || '', lead.distrito || '', lead.n1, lead.n2 || null,
-      lead.tipo_contacto || 'LLAMADA', lead.direccion || '', lead.coordenadas || '', lead.obs_back || '',
-      asesor.id, asesor.nombre, fecha, hora, (lead.rotaciones || 0) + 1, JSON.stringify(historial),
-    ]);
+    // Actualiza el registro existente: no crea duplicados.
+    await conn.query(`
+      UPDATE leads SET
+        asesor_id = ?, asesor_nombre = ?,
+        tipif_back = '', derivado_por_id = NULL, derivado_por_nombre = '',
+        hora_asig = ?, sin_asignar = 0,
+        rotaciones = rotaciones + 1,
+        tipif_vend = '', tipif_hora = '', obs_asesor = '',
+        historial = ?
+      WHERE id = ?
+    `, [asesorNuevo.id, asesorNuevo.nombre, hora, JSON.stringify(historial), req.params.id]);
 
     await conn.commit();
-    res.json({ ok: true, id: result.insertId, asesor: asesor.nombre, mensaje: `Registro rotado a ${asesor.nombre}` });
+    res.json({ ok: true, id: parseInt(req.params.id), asesor: asesorNuevo.nombre, historial, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
   } catch (e) {
     if (conn) await conn.rollback().catch(() => {});
     console.error(e);
@@ -308,8 +318,19 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     const horaReal      = hora_asig || horaPeruAhora();
     const historialJSON = historial ? JSON.stringify(historial) : lead.historial;
     const tipifBackReal = tipif_back === undefined ? lead.tipif_back : normalizarTipifBack(tipif_back);
-    const registraDerivacion = tipifBackReal === 'DERIVADO' && Boolean(asesorId);
-    const derivadoPorNombre = registraDerivacion ? await nombreUsuario(req.user.id) : lead.derivado_por_nombre;
+
+    // Actualiza derivadoPor siempre que tipif_back cambie explícitamente a DERIVADO o deje de serlo.
+    let derivadoPorId     = lead.derivado_por_id;
+    let derivadoPorNombre = lead.derivado_por_nombre;
+    if (tipif_back !== undefined) {
+      if (tipifBackReal === 'DERIVADO') {
+        derivadoPorId     = req.user.id;
+        derivadoPorNombre = await nombreUsuario(req.user.id);
+      } else {
+        derivadoPorId     = null;
+        derivadoPorNombre = '';
+      }
+    }
 
     await db.query(`
       UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,
@@ -320,8 +341,7 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       asesorId, asesorNombreReal, tipifBackReal,
       horaReal, asesorId?0:1, historialJSON,
       req.body.sumarRotacion?1:0,
-      registraDerivacion ? req.user.id : lead.derivado_por_id,
-      derivadoPorNombre,
+      derivadoPorId, derivadoPorNombre,
       req.params.id
     ]);
 
