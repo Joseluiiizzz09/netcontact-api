@@ -298,7 +298,8 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     // Grabaciones pueda mostrar "PROGRAMADO: HH:mm / DD/MM/YYYY" cuando el
     // audio todavía no está subido.
     let sql = `SELECT v.*, u.nombre as asesor_nombre, u.sala, g.nombre as grabando_por_nombre,
-               ph.fecha_programado
+               ph.fecha_programado,
+               ph_prog.estado_prog, ph_prog.usuario_prog, ph_prog.fecha_prog
                FROM ventas v
                LEFT JOIN usuarios u ON v.asesor_id = u.id
                LEFT JOIN usuarios g ON v.grabando_por_id = g.id
@@ -308,6 +309,17 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                  WHERE campo = 'estado' AND UPPER(valor_nuevo) = 'PROGRAMADO'
                  GROUP BY venta_id
                ) ph ON ph.venta_id = v.id
+               LEFT JOIN (
+                 SELECT h1.venta_id, h1.valor_nuevo AS estado_prog,
+                        h1.usuario_nombre AS usuario_prog, h1.created_at AS fecha_prog
+                 FROM venta_historial h1
+                 INNER JOIN (
+                   SELECT venta_id, MAX(id) AS max_id
+                   FROM venta_historial
+                   WHERE campo = 'estado' AND modulo = 'Programación'
+                   GROUP BY venta_id
+                 ) h2 ON h1.id = h2.max_id
+               ) ph_prog ON ph_prog.venta_id = v.id
                WHERE 1=1`;
     const params = [];
 
