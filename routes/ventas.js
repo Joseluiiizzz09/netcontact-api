@@ -488,6 +488,146 @@ router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req
   }
 });
 
+// ===== PATCH /api/ventas/:id/tipificar-validacion =====
+// Endpoint dedicado para Validación: append al historial server-side,
+// control de concurrencia (estadoAnteriorEsperado), usuario desde req.user.
+const TIPS_VALIDACION = ['corta_llamada','fraude','no_desea','no_contesta','buzon_voz','servicio_activo','validado'];
+const TIP_LABELS_VAL  = {
+  corta_llamada:   'CORTA LLAMADA',
+  fraude:          'FRAUDE',
+  no_desea:        'NO DESEA',
+  no_contesta:     'NO CONTESTA',
+  buzon_voz:       'BUZÓN DE VOZ',
+  servicio_activo: 'SERVICIO ACTIVO',
+  validado:        'VALIDADO',
+};
+const TIP_TO_ESTADO_VAL = {
+  validado:        'VALIDADO',
+  corta_llamada:   'CORTA_LLAMADA',
+  fraude:          'FRAUDE',
+  no_desea:        'NO_DESEA',
+  no_contesta:     'NO_CONTESTA',
+  buzon_voz:       'BUZON_VOZ',
+  servicio_activo: 'SERVICIO_ACTIVO',
+};
+
+function nowPeruLabel() {
+  const now  = new Date();
+  const p    = new Date(now.getTime() + (-5 * 3600 * 1000));
+  const pad  = n => String(n).padStart(2, '0');
+  const hh   = p.getUTCHours();
+  const h12  = hh % 12 || 12;
+  const ampm = hh >= 12 ? 'p. m.' : 'a. m.';
+  return `${pad(p.getUTCDate())}/${pad(p.getUTCMonth()+1)}/${p.getUTCFullYear()}, ${h12}:${pad(p.getUTCMinutes())} ${ampm}`;
+}
+
+router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async (req, res) => {
+  const ventaId = Number(req.params.id);
+  if (!Number.isInteger(ventaId) || ventaId <= 0)
+    return res.status(400).json({ ok: false, mensaje: 'ID de venta no válido.' });
+
+  const { tipificacion, observacion, estadoAnteriorEsperado } = req.body;
+  const obsTexto = String(observacion || '').trim();
+
+  if (tipificacion && !TIPS_VALIDACION.includes(tipificacion))
+    return res.status(400).json({ ok: false, mensaje: 'Tipificación inválida.' });
+  if (!tipificacion && !obsTexto)
+    return res.status(400).json({ ok: false, mensaje: 'Selecciona una tipificación o escribe una observación.' });
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [rows] = await conn.query(
+      `SELECT id, estado, obs_validacion FROM ventas WHERE id = ? FOR UPDATE`,
+      [ventaId]
+    );
+    if (!rows.length) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada.' });
+    }
+    const venta = rows[0];
+
+    // Control de concurrencia optimista
+    if (estadoAnteriorEsperado != null) {
+      const estadoActualDB = (venta.estado || 'VENTA').toLowerCase();
+      const estadoEsperado = (estadoAnteriorEsperado || 'venta').toLowerCase();
+      if (estadoActualDB !== estadoEsperado) {
+        await conn.rollback();
+        return res.status(409).json({
+          ok: false,
+          mensaje: 'Esta venta fue modificada por otro validador. Se actualizaron los datos; revisa el historial antes de guardar nuevamente.',
+          estadoActual: estadoActualDB,
+        });
+      }
+    }
+
+    const ts           = nowPeruLabel();
+    const nombreUsuario = req.user.nombre || req.user.usuario;
+    const lineas       = (venta.obs_validacion || '').split('\n').filter(l => l.trim());
+
+    if (tipificacion) lineas.push(`[${ts} - ${nombreUsuario}] ${TIP_LABELS_VAL[tipificacion]}`);
+    if (obsTexto)     lineas.push(`[${ts} - ${nombreUsuario}] ${obsTexto}`);
+
+    const nuevoHistorialTexto = lineas.join('\n');
+    const nuevoEstado         = tipificacion ? TIP_TO_ESTADO_VAL[tipificacion] : null;
+    const estadoAnterior      = venta.estado || 'VENTA';
+
+    if (nuevoEstado) {
+      await conn.query(
+        `UPDATE ventas SET estado = ?, obs_validacion = ? WHERE id = ?`,
+        [nuevoEstado, nuevoHistorialTexto, ventaId]
+      );
+    } else {
+      await conn.query(
+        `UPDATE ventas SET obs_validacion = ? WHERE id = ?`,
+        [nuevoHistorialTexto, ventaId]
+      );
+    }
+
+    const actor = await obtenerActor(conn, req.user.id);
+    if (!actor) throw new Error('No se encontró el actor autenticado.');
+
+    if (nuevoEstado) {
+      await registrarHistorial(conn, ventaId, actor, {
+        tipo:          'CAMBIO_VALIDACION',
+        campo:         'estado',
+        etiqueta:      'Estado de la venta',
+        valorAnterior: estadoAnterior,
+        valorNuevo:    nuevoEstado,
+        descripcion:   obsTexto || null,
+      });
+    }
+    await registrarHistorial(conn, ventaId, actor, {
+      tipo:          'CAMBIO_VALIDACION',
+      campo:         'obs_validacion',
+      etiqueta:      'Tipificación de Validación',
+      valorAnterior: estadoAnterior,
+      valorNuevo:    nuevoEstado || estadoAnterior,
+      descripcion:   tipificacion
+        ? `${TIP_LABELS_VAL[tipificacion]}${obsTexto ? ': ' + obsTexto : ''}`
+        : `Observación: ${obsTexto}`,
+    });
+
+    await conn.commit();
+
+    const [ventaRows] = await conn.query(`
+      SELECT v.*, u.nombre AS asesor_nombre, u.sala
+        FROM ventas v
+        LEFT JOIN usuarios u ON v.asesor_id = u.id
+       WHERE v.id = ?
+    `, [ventaId]);
+
+    res.json({ ok: true, venta: ventaRows[0] || null, mensaje: 'Tipificación guardada' });
+  } catch (e) {
+    await conn.rollback().catch(() => {});
+    console.error('[PATCH /tipificar-validacion]', e.message || e);
+    res.status(500).json({ ok: false, mensaje: 'Error al guardar tipificación.' });
+  } finally {
+    conn.release();
+  }
+});
+
 // ===== PATCH /api/ventas/:id =====
 router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
   const conn = await db.getConnection();
