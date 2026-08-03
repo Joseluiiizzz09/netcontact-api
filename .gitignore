@@ -9,6 +9,11 @@ uploads/
 audios/
 fotos/
 
+# Archivos de importación sensibles
+imports/*.json
+imports/*.xlsx
+imports/*.csv
+
 # Credenciales y llaves
 credentials*.json
 *service-account*.json
