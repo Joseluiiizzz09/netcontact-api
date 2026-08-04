@@ -30,6 +30,24 @@ function normalizarN1(valor) {
   return String(valor || '').replace(/\D+/g, '');
 }
 
+function limpiarN2(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  // Split on '///' to separate phone from GPS data
+  const primary = s.includes('///') ? s.split('///')[0].trim() : s;
+  const digits = primary.replace(/[^0-9]/g, '');
+  // Valid phone: 7–9 digits
+  if (digits.length >= 7 && digits.length <= 9) return digits;
+  // Peru mobile: 9-digit starting with 9
+  const m1 = s.match(/\b9\d{8}\b/);
+  if (m1) return m1[0];
+  // Any 7–9 digit sequence
+  const m2 = s.match(/\b\d{7,9}\b/);
+  if (m2) return m2[0];
+  return null;
+}
+
 function normalizarTipifBack(valor) {
   const tipif = String(valor || '').trim().toUpperCase();
   if (tipif === 'BUZON' || tipif === 'BUZÓN') return 'BUZON DE VOZ';
@@ -123,17 +141,16 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
     for (let idx = 0; idx < registros.length; idx++) {
       const l = registros[idx];
       try {
-        // Validar y limpiar n1
-        const n1Raw = String(l.n1 || '').trim();
-        if (!n1Raw || n1Raw.replace(/\D/g, '').length < 6) {
+        // Validar y normalizar n1 (solo dígitos, sin espacios)
+        const n1Raw = normalizarN1(l.n1);
+        if (!n1Raw || n1Raw.length < 6) {
           errores++;
           erroresDetalle.push({ fila: idx + 1, n1: l.n1, motivo: 'N1 vacío o inválido' });
           continue;
         }
 
-        // Limpiar n2: eliminar datos GPS (todo después de '///'), truncar a 20 chars
-        const n2Raw = String(l.n2 || '').trim();
-        const n2Clean = ((n2Raw.includes('///') ? n2Raw.split('///')[0] : n2Raw).trim().substring(0, 20)) || null;
+        // Limpiar n2: extrae número de teléfono válido, descarta GPS y texto
+        const n2Clean = limpiarN2(l.n2);
 
         const fechaLead  = String(l.fecha || fechaPeruHoy()).substring(0, 10);
         const campana    = String(l.campana    || '').substring(0, 100);
