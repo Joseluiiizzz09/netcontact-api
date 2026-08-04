@@ -106,6 +106,125 @@ router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (
   }
 });
 
+// POST /api/leads/import-legacy
+// Importacion masiva con historial completo (ASESOR 1-6), tipif_vend, idempotente y transaccional.
+router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    const registros = Array.isArray(req.body) ? req.body : [req.body];
+    if (!registros.length)
+      return res.status(400).json({ ok: false, mensaje: 'No se recibieron registros' });
+
+    let creados = 0, actualizados = 0, existentes = 0, errores = 0;
+    const erroresDetalle = [];
+
+    await conn.beginTransaction();
+
+    for (let idx = 0; idx < registros.length; idx++) {
+      const l = registros[idx];
+      try {
+        // Validar y limpiar n1
+        const n1Raw = String(l.n1 || '').trim();
+        if (!n1Raw || n1Raw.replace(/\D/g, '').length < 6) {
+          errores++;
+          erroresDetalle.push({ fila: idx + 1, n1: l.n1, motivo: 'N1 vacío o inválido' });
+          continue;
+        }
+
+        // Limpiar n2: eliminar datos GPS (todo después de '///'), truncar a 20 chars
+        const n2Raw = String(l.n2 || '').trim();
+        const n2Clean = ((n2Raw.includes('///') ? n2Raw.split('///')[0] : n2Raw).trim().substring(0, 20)) || null;
+
+        const fechaLead  = String(l.fecha || fechaPeruHoy()).substring(0, 10);
+        const campana    = String(l.campana    || '').substring(0, 100);
+        const distrito   = String(l.distrito   || '').substring(0, 100);
+        const tipifBack  = normalizarTipifBack(l.tipif_back);
+        const tipifVend  = String(l.tipif_vend || '').trim().substring(0, 100);
+        const hora       = String(l.hora       || '').trim().substring(0, 10);
+
+        // Construir historial desde array de asesores
+        const asesores = Array.isArray(l.asesores)
+          ? l.asesores.map(a => String(a || '').trim()).filter(a => a.length > 1)
+          : [];
+        const lastAsesor = asesores.length ? asesores[asesores.length - 1] : '';
+
+        const historialArray = asesores.map((a, i) => ({
+          asesor:     a,
+          hora:       i === asesores.length - 1 ? hora : '',
+          fecha:      fechaLead,
+          motivo:     i === 0 ? 'Asignacion importada' : 'Rotacion importada',
+          tipif_vend: i === asesores.length - 1 ? tipifVend : '',
+          importado:  true,
+        }));
+
+        // Buscar asesor en usuarios (case insensitive)
+        let asesorId = null, asesorNombre = '';
+        if (lastAsesor) {
+          const [uRows] = await conn.query(
+            `SELECT id, nombre FROM usuarios WHERE LOWER(TRIM(nombre)) = LOWER(TRIM(?)) LIMIT 1`,
+            [lastAsesor]
+          );
+          if (uRows.length) { asesorId = uRows[0].id; asesorNombre = uRows[0].nombre; }
+          else               { asesorNombre = lastAsesor; }
+        }
+
+        const rotaciones = Math.max(0, asesores.length - 1);
+        const sinAsignar = asesorId ? 0 : 1;
+
+        // Verificar si n1 + fecha ya existe (clave de idempotencia)
+        const [existing] = await conn.query(
+          `SELECT id, historial FROM leads WHERE n1 = ? AND fecha = ? LIMIT 1`,
+          [n1Raw, fechaLead]
+        );
+
+        if (existing.length) {
+          // Actualizar solo si el historial está vacío (no sobreescribir trabajo manual)
+          const existingHist = (() => { try { return JSON.parse(existing[0].historial || '[]'); } catch(e) { return []; } })();
+          if (existingHist.length === 0 && historialArray.length > 0) {
+            await conn.query(
+              `UPDATE leads SET historial=?, asesor_id=?, asesor_nombre=?, tipif_vend=?, tipif_hora=?, sin_asignar=?, rotaciones=? WHERE id=?`,
+              [JSON.stringify(historialArray), asesorId, asesorNombre, tipifVend, hora, sinAsignar, rotaciones, existing[0].id]
+            );
+            actualizados++;
+          } else {
+            existentes++;
+          }
+        } else {
+          await conn.query(
+            `INSERT INTO leads (campana, distrito, n1, n2, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, tipif_vend, tipif_hora, historial, rotaciones)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [campana, distrito, n1Raw, n2Clean, tipifBack, asesorId, asesorNombre, fechaLead, hora, sinAsignar, tipifVend, hora, JSON.stringify(historialArray), rotaciones]
+          );
+          creados++;
+        }
+      } catch (recordErr) {
+        console.error(`[import-legacy] Error en fila ${idx + 1}:`, recordErr.message);
+        errores++;
+        erroresDetalle.push({ fila: idx + 1, n1: l.n1, motivo: recordErr.message });
+      }
+    }
+
+    await conn.commit();
+
+    res.json({
+      ok: true,
+      procesados: registros.length,
+      creados,
+      actualizados,
+      existentes,
+      errores,
+      erroresDetalle: erroresDetalle.slice(0, 30),
+    });
+
+  } catch (e) {
+    try { await conn.rollback(); } catch(re) { /* ignore */ }
+    console.error('[import-legacy] Error general, rollback aplicado:', e.message);
+    res.status(500).json({ ok: false, mensaje: 'Error en la importación masiva. Rollback aplicado.', detalle: e.message });
+  } finally {
+    conn.release();
+  }
+});
+
 // POST /api/leads
 router.post('/', auth(ROLES_BO), async (req, res) => {
   try {
