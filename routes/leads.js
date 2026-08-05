@@ -443,6 +443,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       asesorAnterior: lead.asesor_nombre || 'Sin asignar',
       rotadoPor:     rotadorNombre,
       tipifBackAntes: lead.tipif_back || '',
+      tipifVendAntes: lead.tipif_vend || '',
       hora,
       fecha,
       motivo: String(motivo || '').trim() || 'Rotacion manual',
@@ -521,29 +522,47 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       }
     }
 
-    // Historial: inyecta derivadoPor desde el usuario autenticado en la última entrada
-    // de tipo DERIVADO para que el frontend no pueda enviar un nombre falso.
+    const asesorCambia = !!asesor_nombre && asesor_nombre !== (lead.asesor_nombre || '');
+    let reasignadoPorNombre = '';
+    if (asesorCambia) {
+      reasignadoPorNombre = await nombreUsuario(req.user.id);
+    }
+
+    // Historial: inyecta derivadoPor (DERIVADO) y asesorAnterior/reasignadoPor (cambio de asesor).
     let historialJSON;
     if (historial) {
       const histArr = [...historial];
-      if (tipifBackReal === 'DERIVADO' && histArr.length > 0) {
-        histArr[histArr.length - 1] = { ...histArr[histArr.length - 1], derivadoPor: derivadoPorNombre };
+      if (histArr.length > 0) {
+        const lastIdx = histArr.length - 1;
+        let lastEntry = { ...histArr[lastIdx] };
+        if (tipifBackReal === 'DERIVADO') {
+          lastEntry = { ...lastEntry, derivadoPor: derivadoPorNombre };
+        }
+        if (asesorCambia) {
+          if (!lastEntry.asesorAnterior) lastEntry.asesorAnterior = lead.asesor_nombre || '';
+          if (reasignadoPorNombre) lastEntry.reasignadoPor = reasignadoPorNombre;
+        }
+        histArr[lastIdx] = lastEntry;
       }
       historialJSON = JSON.stringify(histArr);
     } else {
       historialJSON = lead.historial;
     }
 
+    const sqlExtra = asesorCambia ? ', tipif_vend=?, tipif_hora=?' : '';
+    const paramsExtra = asesorCambia ? ['', ''] : [];
+
     await db.query(`
       UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,
         sin_asignar=?, historial=?, rotaciones=rotaciones+?,
-        derivado_por_id=?, derivado_por_nombre=?
+        derivado_por_id=?, derivado_por_nombre=?${sqlExtra}
       WHERE id=?
     `, [
       asesorId, asesorNombreReal, tipifBackReal,
       horaReal, asesorId?0:1, historialJSON,
       req.body.sumarRotacion?1:0,
       derivadoPorId, derivadoPorNombre,
+      ...paramsExtra,
       req.params.id
     ]);
 
