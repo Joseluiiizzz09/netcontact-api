@@ -55,6 +55,14 @@ function normalizarTipifBack(valor) {
   return tipif;
 }
 
+function normalizarTipifVendLegacy(valor) {
+  const v = String(valor || '').trim();
+  const u = v.toUpperCase();
+  if (u === 'SH NO ROTAR') return 'NO TOCAR';
+  if (u === 'SH INSTALADO') return 'INSTALADO';
+  return v;
+}
+
 async function nombreUsuario(id) {
   const [rows] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [id]);
   return rows[0]?.nombre || 'Usuario Back Data';
@@ -156,8 +164,9 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
         const campana    = String(l.campana    || '').substring(0, 100);
         const distrito   = String(l.distrito   || '').substring(0, 100);
         const tipifBack  = normalizarTipifBack(l.tipif_back);
-        const tipifVend  = String(l.tipif_vend || '').trim().substring(0, 100);
+        const tipifVend  = normalizarTipifVendLegacy(l.tipif_vend).substring(0, 100);
         const hora       = String(l.hora       || '').trim().substring(0, 10);
+        const obsAsesor  = String(l.comentario || '').trim().substring(0, 2000) || null;
 
         // Construir historial desde array de asesores
         const asesores = Array.isArray(l.asesores)
@@ -166,12 +175,14 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
         const lastAsesor = asesores.length ? asesores[asesores.length - 1] : '';
 
         const historialArray = asesores.map((a, i) => ({
-          asesor:     a,
-          hora:       i === asesores.length - 1 ? hora : '',
-          fecha:      fechaLead,
-          motivo:     i === 0 ? 'Asignacion importada' : 'Rotacion importada',
-          tipif_vend: i === asesores.length - 1 ? tipifVend : '',
-          importado:  true,
+          asesor:         a,
+          asesorAnterior: i > 0 ? asesores[i - 1] : '',
+          tipo:           i > 0 ? 'ROTACION' : '',
+          hora:           i === asesores.length - 1 ? hora : '',
+          fecha:          fechaLead,
+          motivo:         i === 0 ? 'Asignacion importada' : 'Rotacion importada',
+          tipif_vend:     i === asesores.length - 1 ? tipifVend : '',
+          importado:      true,
         }));
 
         // Buscar asesor en usuarios (case insensitive)
@@ -190,17 +201,25 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
 
         // Verificar si n1 + fecha ya existe (clave de idempotencia)
         const [existing] = await conn.query(
-          `SELECT id, historial FROM leads WHERE n1 = ? AND fecha = ? LIMIT 1`,
+          `SELECT id, historial, obs_asesor FROM leads WHERE n1 = ? AND fecha = ? LIMIT 1`,
           [n1Raw, fechaLead]
         );
 
         if (existing.length) {
-          // Actualizar solo si el historial está vacío (no sobreescribir trabajo manual)
           const existingHist = (() => { try { return JSON.parse(existing[0].historial || '[]'); } catch(e) { return []; } })();
+          const existingObs  = existing[0].obs_asesor || null;
           if (existingHist.length === 0 && historialArray.length > 0) {
+            // Historial vacío: completar con el historial importado
             await conn.query(
-              `UPDATE leads SET historial=?, asesor_id=?, asesor_nombre=?, tipif_vend=?, tipif_hora=?, sin_asignar=?, rotaciones=? WHERE id=?`,
-              [JSON.stringify(historialArray), asesorId, asesorNombre, tipifVend, hora, sinAsignar, rotaciones, existing[0].id]
+              `UPDATE leads SET historial=?, asesor_id=?, asesor_nombre=?, tipif_vend=?, tipif_hora=?, sin_asignar=?, rotaciones=?, obs_asesor=COALESCE(NULLIF(obs_asesor,''),?) WHERE id=?`,
+              [JSON.stringify(historialArray), asesorId, asesorNombre, tipifVend, hora, sinAsignar, rotaciones, obsAsesor, existing[0].id]
+            );
+            actualizados++;
+          } else if (existingHist.length > 0 && !existingObs && obsAsesor) {
+            // Historial ya existe pero falta obs_asesor (p.ej. DNI de una re-importación)
+            await conn.query(
+              `UPDATE leads SET obs_asesor=? WHERE id=?`,
+              [obsAsesor, existing[0].id]
             );
             actualizados++;
           } else {
@@ -208,9 +227,9 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
           }
         } else {
           await conn.query(
-            `INSERT INTO leads (campana, distrito, n1, n2, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, tipif_vend, tipif_hora, historial, rotaciones)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [campana, distrito, n1Raw, n2Clean, tipifBack, asesorId, asesorNombre, fechaLead, hora, sinAsignar, tipifVend, hora, JSON.stringify(historialArray), rotaciones]
+            `INSERT INTO leads (campana, distrito, n1, n2, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, tipif_vend, tipif_hora, historial, rotaciones, obs_asesor)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [campana, distrito, n1Raw, n2Clean, tipifBack, asesorId, asesorNombre, fechaLead, hora, sinAsignar, tipifVend, hora, JSON.stringify(historialArray), rotaciones, obsAsesor]
           );
           creados++;
         }
