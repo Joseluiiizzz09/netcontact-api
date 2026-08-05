@@ -558,10 +558,10 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
         derivado_por_id=?, derivado_por_nombre=?${sqlExtra}
       WHERE id=?
     `, [
-      asesorId, asesorNombreReal, tipifBackReal,
+      asesorId, asesorNombreReal, asesorCambia ? '' : tipifBackReal,
       horaReal, asesorId?0:1, historialJSON,
       req.body.sumarRotacion?1:0,
-      derivadoPorId, derivadoPorNombre,
+      asesorCambia ? null : derivadoPorId, asesorCambia ? '' : derivadoPorNombre,
       ...paramsExtra,
       req.params.id
     ]);
