@@ -137,7 +137,13 @@ router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (
 router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
   const conn = await db.getConnection();
   try {
-    const registros = Array.isArray(req.body) ? req.body : [req.body];
+    // Soporta dos formatos de body:
+    //  - Array de registros (formato original, idempotente por n1+fecha)
+    //  - { registros: [...], permitirDuplicados: true } para permitir duplicados dentro de la carga
+    const permitirDuplicados = (!Array.isArray(req.body) && req.body && req.body.permitirDuplicados === true);
+    const registros = Array.isArray(req.body)
+      ? req.body
+      : (Array.isArray(req.body && req.body.registros) ? req.body.registros : [req.body]);
     if (!registros.length)
       return res.status(400).json({ ok: false, mensaje: 'No se recibieron registros' });
 
@@ -199,11 +205,16 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
         const rotaciones = Math.max(0, asesores.length - 1);
         const sinAsignar = asesorId ? 0 : 1;
 
-        // Verificar si n1 + fecha ya existe (clave de idempotencia)
-        const [existing] = await conn.query(
-          `SELECT id, historial, obs_asesor FROM leads WHERE n1 = ? AND fecha = ? LIMIT 1`,
-          [n1Raw, fechaLead]
-        );
+        // Verificar si n1 + fecha ya existe (clave de idempotencia).
+        // Con permitirDuplicados=true se omite el chequeo y se inserta siempre,
+        // permitiendo duplicados del mismo número dentro de la misma carga/fecha.
+        let existing = [];
+        if (!permitirDuplicados) {
+          [existing] = await conn.query(
+            `SELECT id, historial, obs_asesor FROM leads WHERE n1 = ? AND fecha = ? LIMIT 1`,
+            [n1Raw, fechaLead]
+          );
+        }
 
         if (existing.length) {
           const existingHist = (() => { try { return JSON.parse(existing[0].historial || '[]'); } catch(e) { return []; } })();
