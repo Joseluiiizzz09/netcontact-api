@@ -80,7 +80,13 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const params = [];
 
     if (req.user.cargo === 'asesor') {
-      sql += ` AND l.asesor_id = ?`; params.push(req.user.id);
+      // Base del asesor: leads asignados AHORA a él + los que trabajó antes
+      // (su nombre aparece en el historial). Así un número no desaparece de su
+      // base al ser rotado a otro asesor; conserva su registro de lo trabajado.
+      const [uNom] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+      const nom = uNom[0]?.nombre || '';
+      sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"', ?, '"%'))`;
+      params.push(req.user.id, nom);
     } else if (asesor_id) {
       sql += ` AND l.asesor_id = ?`; params.push(asesor_id);
     }
