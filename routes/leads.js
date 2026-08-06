@@ -464,7 +464,6 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
         tipif_back = '', derivado_por_id = NULL, derivado_por_nombre = '',
         hora_asig = ?, sin_asignar = 0,
         rotaciones = rotaciones + 1,
-        tipif_vend = '', tipif_hora = '', obs_asesor = '',
         historial = ?
       WHERE id = ?
     `, [asesorNuevo.id, asesorNuevo.nombre, hora, JSON.stringify(historial), req.params.id]);
@@ -557,8 +556,10 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       historialJSON = lead.historial;
     }
 
-    const sqlExtra = asesorCambia ? ', tipif_vend=?, tipif_hora=?' : '';
-    const paramsExtra = asesorCambia ? ['', ''] : [];
+    // La tipificación de venta NO se borra al cambiar de asesor: se mantiene hasta
+    // que el nuevo vendedor la modifique (rotación/reasignación conservan tipif_vend).
+    const sqlExtra = '';
+    const paramsExtra = [];
 
     await db.query(`
       UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,
