@@ -599,6 +599,16 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
   }
 });
 
+// Registra/actualiza (upsert, uno por asesor) un evento de tipificación con marca de
+// tiempo en el historial. La base principal muestra el evento con ts más reciente
+// ("la más reciente gana"), sin importar si es del titular actual o de un asesor previo.
+function upsertTipifEvent(historial, asesor, tipif) {
+  const ev = { tipo:'TIPIF_VEND', asesor: asesor || '', tipif: tipif || '', ts: Date.now(), hora: horaPeruAhora(), fecha: fechaPeruHoy() };
+  const i = historial.findIndex(h => h?.tipo === 'TIPIF_VEND' && (h.asesor || '') === (asesor || ''));
+  if (i >= 0) historial[i] = ev; else historial.push(ev);
+  return historial;
+}
+
 // PATCH /api/leads/:id/tipif
 router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
   try {
@@ -610,21 +620,23 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     const lead = rows[0];
     const esAsesor = req.user.cargo === 'asesor';
     const esActual = lead.asesor_id === req.user.id;
+    let historial = [];
+    try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
 
-    // Titular actual, o cargos de gestión (backoffice, etc.): actualiza la tipif vigente.
+    // Titular actual, o cargos de gestión (backoffice, etc.): actualiza la tipif vigente
+    // del titular + registra el evento (con ts) a nombre del titular actual.
     if (!esAsesor || esActual) {
-      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=? WHERE id=?`, [tipif_vend||'', horaPeruAhora(), req.params.id]);
+      upsertTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '');
+      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=? WHERE id=?`,
+        [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), req.params.id]);
       return res.json({ ok: true, mensaje: 'Tipificación guardada' });
     }
 
-    // Asesor que YA no es el titular: puede ACTUALIZAR su propia tipificación en el
-    // historial (p.ej. recontactó al cliente). No toca la del titular actual; si éste
-    // aún no tipificó, la base principal reflejará esta (deriva del historial).
+    // Asesor que YA no es el titular: puede ACTUALIZAR su propia tipificación (p.ej.
+    // recontactó al cliente). Actualiza su registro en el historial y su evento con ts,
+    // para que la base tome la más reciente. No toca la tipif del titular actual.
     const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
     const miNombre = (me[0]?.nombre || '').trim();
-    let historial = [];
-    try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
-    // Última entrada donde este asesor fue rotado/reasignado (guarda SU tipificación).
     let idx = -1;
     for (let i = historial.length - 1; i >= 0; i--) {
       if ((historial[i]?.asesorAnterior || '').trim() === miNombre) { idx = i; break; }
@@ -637,6 +649,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     if (['VENTA CERRADA','SIN COBERTURA'].includes(nueva))
       return res.status(409).json({ ok: false, mensaje: 'No puedes finalizar un número que ya no tienes asignado' });
     historial[idx].tipifVendAntes = tipif_vend || '';
+    upsertTipifEvent(historial, miNombre, tipif_vend || '');
     await db.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(historial), req.params.id]);
     res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
   } catch(e) {
@@ -684,7 +697,7 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
     // Localiza la asignación a eliminar (ignora entradas que no son asignaciones).
     const idx = historial.findIndex(h =>
       h && h.asesor === asesor && (h.hora || '') === (hora || '') && (h.fecha || '') === (fecha || '') &&
-      h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO');
+      h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND');
     if (idx < 0) { await conn.rollback(); return res.status(404).json({ ok: false, mensaje: 'Asignación no encontrada' }); }
 
     const eliminado = historial[idx];
@@ -692,7 +705,7 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
     const eraActual = (lead.asesor_nombre || '') === (eliminado.asesor || '');
 
     if (eraActual) {
-      const asignaciones = nuevoHist.filter(h => h.asesor && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO');
+      const asignaciones = nuevoHist.filter(h => h.asesor && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND');
       const previo = asignaciones[asignaciones.length - 1];
       if (previo) {
         const [u] = await conn.query(`SELECT id, nombre FROM usuarios WHERE nombre = ? LIMIT 1`, [previo.asesor]);
