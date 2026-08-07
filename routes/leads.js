@@ -588,13 +588,15 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
   }
 });
 
-// Registra/actualiza (upsert, uno por asesor) un evento de tipificación con marca de
-// tiempo en el historial. La base principal muestra el evento con ts más reciente
-// ("la más reciente gana"), sin importar si es del titular actual o de un asesor previo.
-function upsertTipifEvent(historial, asesor, tipif) {
-  const ev = { tipo:'TIPIF_VEND', asesor: asesor || '', tipif: tipif || '', ts: Date.now(), hora: horaPeruAhora(), fecha: fechaPeruHoy() };
-  const i = historial.findIndex(h => h?.tipo === 'TIPIF_VEND' && (h.asesor || '') === (asesor || ''));
-  if (i >= 0) historial[i] = ev; else historial.push(ev);
+// Agrega un evento de tipificación (log cronológico) con marca de tiempo. La base
+// principal muestra el de ts más reciente ("la más reciente gana"), y el historial de
+// tipificaciones muestra todo el log. Evita duplicar si el último evento ya es del
+// mismo asesor con el mismo valor.
+function registrarTipifEvent(historial, asesor, tipif) {
+  const eventos = historial.filter(h => h?.tipo === 'TIPIF_VEND');
+  const ultimo = eventos[eventos.length - 1];
+  if (ultimo && (ultimo.asesor || '') === (asesor || '') && (ultimo.tipif || '') === (tipif || '')) return historial;
+  historial.push({ tipo:'TIPIF_VEND', asesor: asesor || '', tipif: tipif || '', ts: Date.now(), hora: horaPeruAhora(), fecha: fechaPeruHoy() });
   return historial;
 }
 
@@ -615,7 +617,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // Titular actual, o cargos de gestión (backoffice, etc.): actualiza la tipif vigente
     // del titular + registra el evento (con ts) a nombre del titular actual.
     if (!esAsesor || esActual) {
-      upsertTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '');
+      registrarTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '');
       await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=? WHERE id=?`,
         [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), req.params.id]);
       return res.json({ ok: true, mensaje: 'Tipificación guardada' });
@@ -632,13 +634,12 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     }
     if (idx < 0) return res.status(403).json({ ok: false, mensaje: 'No puedes tipificar leads de otros asesores' });
     const previa = String(historial[idx].tipifVendAntes || '').toUpperCase();
-    if (['VENTA CERRADA','SIN COBERTURA','NO TOCAR','FRAUDE','INSTALADO'].includes(previa))
-      return res.status(409).json({ ok: false, mensaje: `Tu tipificación ya es final (${previa}) y no se puede cambiar` });
-    const nueva = String(tipif_vend || '').toUpperCase();
-    if (['VENTA CERRADA','SIN COBERTURA'].includes(nueva))
-      return res.status(409).json({ ok: false, mensaje: 'No puedes finalizar un número que ya no tienes asignado' });
+    if (['NO TOCAR','FRAUDE'].includes(previa))
+      return res.status(409).json({ ok: false, mensaje: `Tu tipificación está protegida (${previa}) y no se puede cambiar` });
+    // El asesor previo SÍ puede finalizar (VENTA CERRADA / SIN COBERTURA) si recontactó
+    // al cliente; la base tomará esa como la más reciente.
     historial[idx].tipifVendAntes = tipif_vend || '';
-    upsertTipifEvent(historial, miNombre, tipif_vend || '');
+    registrarTipifEvent(historial, miNombre, tipif_vend || '');
     await db.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(historial), req.params.id]);
     res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
   } catch(e) {
@@ -652,10 +653,17 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
     const { obs } = req.body;
     if (obs && String(obs).length > 2000)
       return res.status(400).json({ ok: false, mensaje: 'obs_asesor no puede superar 2000 caracteres' });
-    const [rows] = await db.query(`SELECT id, asesor_id FROM leads WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id, historial FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
-    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id)
-      return res.status(403).json({ ok: false, mensaje: 'No puedes modificar observaciones de leads de otros asesores' });
+    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
+      // Permitir si el asesor participó del número (aparece en el historial): así puede
+      // guardar el DNI al cerrar una venta de un número que trabajó y luego rotó.
+      const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+      const miNombre = (me[0]?.nombre || '').trim();
+      let hist = []; try { hist = JSON.parse(rows[0].historial || '[]'); } catch { hist = []; }
+      const participo = hist.some(h => (h?.asesor || '').trim() === miNombre || (h?.asesorAnterior || '').trim() === miNombre);
+      if (!participo) return res.status(403).json({ ok: false, mensaje: 'No puedes modificar observaciones de leads de otros asesores' });
+    }
     await db.query(`UPDATE leads SET obs_asesor=? WHERE id=?`, [obs||'', req.params.id]);
     res.json({ ok: true, mensaje: 'Observacion guardada' });
   } catch(e) {
