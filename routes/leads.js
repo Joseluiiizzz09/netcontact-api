@@ -475,6 +475,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
         tipif_back = '', derivado_por_id = NULL, derivado_por_nombre = '',
         hora_asig = ?, sin_asignar = 0,
         rotaciones = rotaciones + 1,
+        tipif_vend = '', tipif_hora = '', obs_asesor = '',
         historial = ?
       WHERE id = ?
     `, [asesorNuevo.id, asesorNuevo.nombre, hora, JSON.stringify(historial), req.params.id]);
@@ -559,6 +560,9 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
         if (asesorCambia) {
           if (!lastEntry.asesorAnterior) lastEntry.asesorAnterior = lead.asesor_nombre || '';
           if (reasignadoPorNombre) lastEntry.reasignadoPor = reasignadoPorNombre;
+          // Preserva la tipificación que dejó el asesor anterior, para que la base
+          // principal la siga mostrando hasta que el nuevo asesor tipifique.
+          if (lastEntry.tipifVendAntes == null) lastEntry.tipifVendAntes = lead.tipif_vend || '';
         }
         histArr[lastIdx] = lastEntry;
       }
@@ -567,10 +571,11 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       historialJSON = lead.historial;
     }
 
-    // La tipificación de venta NO se borra al cambiar de asesor: se mantiene hasta
-    // que el nuevo vendedor la modifique (rotación/reasignación conservan tipif_vend).
-    const sqlExtra = '';
-    const paramsExtra = [];
+    // Al cambiar de asesor se limpia la tipif_vend del NUEVO asesor (la ve vacía y
+    // coloca la suya). La base principal sigue mostrando la del asesor anterior
+    // derivándola del historial (tipifVendAntes) hasta que el nuevo tipifique.
+    const sqlExtra = asesorCambia ? ', tipif_vend=?, tipif_hora=?' : '';
+    const paramsExtra = asesorCambia ? ['', ''] : [];
 
     await db.query(`
       UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,
@@ -623,6 +628,71 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
     res.json({ ok: true, mensaje: 'Observacion guardada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al guardar observación' });
+  }
+});
+
+// PATCH /api/leads/:id/eliminar-asignacion
+// Elimina una asignación individual del historial (identificada por asesor+hora+fecha).
+// El número desaparece de la base del asesor eliminado. Si era el titular actual, vuelve
+// al asesor anterior (con la tipificación que dejó) o queda sin asignar si no hay anterior.
+router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
+  let conn;
+  try {
+    const { asesor, hora, fecha } = req.body;
+    if (!asesor?.trim()) return res.status(400).json({ ok: false, mensaje: 'Falta el asesor de la asignación' });
+
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const [leads] = await conn.query(`SELECT * FROM leads WHERE id = ? FOR UPDATE`, [req.params.id]);
+    if (!leads.length) { await conn.rollback(); return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' }); }
+    const lead = leads[0];
+
+    let historial = [];
+    try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
+
+    // Localiza la asignación a eliminar (ignora entradas que no son asignaciones).
+    const idx = historial.findIndex(h =>
+      h && h.asesor === asesor && (h.hora || '') === (hora || '') && (h.fecha || '') === (fecha || '') &&
+      h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO');
+    if (idx < 0) { await conn.rollback(); return res.status(404).json({ ok: false, mensaje: 'Asignación no encontrada' }); }
+
+    const eliminado = historial[idx];
+    const nuevoHist = historial.filter((_, i) => i !== idx);
+    const eraActual = (lead.asesor_nombre || '') === (eliminado.asesor || '');
+
+    if (eraActual) {
+      const asignaciones = nuevoHist.filter(h => h.asesor && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO');
+      const previo = asignaciones[asignaciones.length - 1];
+      if (previo) {
+        const [u] = await conn.query(`SELECT id, nombre FROM usuarios WHERE nombre = ? LIMIT 1`, [previo.asesor]);
+        const asesorId = u.length ? u[0].id : null;
+        // La tipificación del asesor previo quedó registrada como tipifVendAntes en la
+        // entrada que lo rotó hacia el asesor eliminado.
+        const tipifPrevio = eliminado.tipifVendAntes != null ? String(eliminado.tipifVendAntes) : '';
+        await conn.query(
+          `UPDATE leads SET asesor_id=?, asesor_nombre=?, sin_asignar=0, tipif_vend=?, tipif_hora='', historial=? WHERE id=?`,
+          [asesorId, previo.asesor, tipifPrevio, JSON.stringify(nuevoHist), req.params.id]);
+      } else {
+        await conn.query(
+          `UPDATE leads SET asesor_id=NULL, asesor_nombre='', sin_asignar=1, tipif_vend='', tipif_hora='', historial=? WHERE id=?`,
+          [JSON.stringify(nuevoHist), req.params.id]);
+      }
+    } else {
+      await conn.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(nuevoHist), req.params.id]);
+    }
+
+    await conn.commit();
+    const [after] = await conn.query(`SELECT historial, asesor_nombre, tipif_vend FROM leads WHERE id = ?`, [req.params.id]);
+    let histOut = [];
+    try { histOut = JSON.parse(after[0].historial || '[]'); } catch { histOut = []; }
+    res.json({ ok: true, historial: histOut, asesor: after[0].asesor_nombre || '', tipif_vend: after[0].tipif_vend || '' });
+  } catch (e) {
+    if (conn) await conn.rollback().catch(() => {});
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al eliminar la asignación' });
+  } finally {
+    if (conn) conn.release();
   }
 });
 
