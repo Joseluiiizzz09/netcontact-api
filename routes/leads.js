@@ -85,7 +85,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       // base al ser rotado a otro asesor; conserva su registro de lo trabajado.
       const [uNom] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
       const nom = uNom[0]?.nombre || '';
-      sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"', ?, '"%'))`;
+      // El nombre debe figurar como ASESOR titular de alguna asignación ("asesor":"nom"),
+      // no como asesorAnterior/rotadoPor. Así, al quitar su asignación desaparece de su base.
+      sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"asesor":"', ?, '"%'))`;
       params.push(req.user.id, nom);
     } else if (asesor_id) {
       sql += ` AND l.asesor_id = ?`; params.push(asesor_id);
