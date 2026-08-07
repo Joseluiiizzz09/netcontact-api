@@ -594,12 +594,40 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     const { tipif_vend } = req.body;
     if (tipif_vend && String(tipif_vend).length > 200)
       return res.status(400).json({ ok: false, mensaje: 'tipif_vend no puede superar 200 caracteres' });
-    const [rows] = await db.query(`SELECT id, asesor_id FROM leads WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
-    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id)
-      return res.status(403).json({ ok: false, mensaje: 'No puedes tipificar leads de otros asesores' });
-    await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=? WHERE id=?`, [tipif_vend||'', horaPeruAhora(), req.params.id]);
-    res.json({ ok: true, mensaje: 'Tipificación guardada' });
+    const lead = rows[0];
+    const esAsesor = req.user.cargo === 'asesor';
+    const esActual = lead.asesor_id === req.user.id;
+
+    // Titular actual, o cargos de gestión (backoffice, etc.): actualiza la tipif vigente.
+    if (!esAsesor || esActual) {
+      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=? WHERE id=?`, [tipif_vend||'', horaPeruAhora(), req.params.id]);
+      return res.json({ ok: true, mensaje: 'Tipificación guardada' });
+    }
+
+    // Asesor que YA no es el titular: puede ACTUALIZAR su propia tipificación en el
+    // historial (p.ej. recontactó al cliente). No toca la del titular actual; si éste
+    // aún no tipificó, la base principal reflejará esta (deriva del historial).
+    const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+    const miNombre = (me[0]?.nombre || '').trim();
+    let historial = [];
+    try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
+    // Última entrada donde este asesor fue rotado/reasignado (guarda SU tipificación).
+    let idx = -1;
+    for (let i = historial.length - 1; i >= 0; i--) {
+      if ((historial[i]?.asesorAnterior || '').trim() === miNombre) { idx = i; break; }
+    }
+    if (idx < 0) return res.status(403).json({ ok: false, mensaje: 'No puedes tipificar leads de otros asesores' });
+    const previa = String(historial[idx].tipifVendAntes || '').toUpperCase();
+    if (['VENTA CERRADA','SIN COBERTURA','NO TOCAR','FRAUDE','INSTALADO'].includes(previa))
+      return res.status(409).json({ ok: false, mensaje: `Tu tipificación ya es final (${previa}) y no se puede cambiar` });
+    const nueva = String(tipif_vend || '').toUpperCase();
+    if (['VENTA CERRADA','SIN COBERTURA'].includes(nueva))
+      return res.status(409).json({ ok: false, mensaje: 'No puedes finalizar un número que ya no tienes asignado' });
+    historial[idx].tipifVendAntes = tipif_vend || '';
+    await db.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(historial), req.params.id]);
+    res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al guardar tipificación' });
   }
