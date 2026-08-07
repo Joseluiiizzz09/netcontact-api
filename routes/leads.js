@@ -684,6 +684,18 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
       await conn.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(nuevoHist), req.params.id]);
     }
 
+    // Auditoría para Jefatura/Gerencia: registra quién quitó qué asignación.
+    const [actores] = await conn.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+    const actor = actores[0] || {};
+    await conn.query(
+      `INSERT INTO eliminaciones
+        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, snapshot_json)
+       VALUES (?, ?, ?, 'ASIGNACION_BACKDATA', ?, ?, ?)`,
+      [req.user.id, actor.nombre || 'Usuario', actor.cargo || req.user.cargo || '', String(req.params.id),
+        `Quitó asignación de ${eliminado.asesor || '—'} · N1 ${lead.n1 || '—'} · ${eraActual ? 'era titular actual' : 'asesor anterior'}`,
+        JSON.stringify({ entradaEliminada: eliminado, leadN1: lead.n1, leadFecha: lead.fecha })]
+    );
+
     await conn.commit();
     const [after] = await conn.query(`SELECT historial, asesor_nombre, tipif_vend FROM leads WHERE id = ?`, [req.params.id]);
     let histOut = [];
