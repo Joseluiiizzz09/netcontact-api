@@ -9,7 +9,7 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
-const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['NO TOCAR', 'FRAUDE']);
+const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['NO TOCAR', 'FRAUDE', 'INSTALADO']);
 
 function tipificacionProhibida(valor) {
   return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
@@ -632,6 +632,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     const lead = rows[0];
     const esAsesor = req.user.cargo === 'asesor';
     const esActual = lead.asesor_id === req.user.id;
+    if (esAsesor && String(tipif_vend || '').trim().toUpperCase() === 'INSTALADO')
+      return res.status(403).json({ ok: false, mensaje: 'La tipificación INSTALADO es exclusiva de Back Data' });
     let historial = [];
     try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
 
@@ -655,7 +657,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     }
     if (idx < 0) return res.status(403).json({ ok: false, mensaje: 'No puedes tipificar leads de otros asesores' });
     const previa = String(historial[idx].tipifVendAntes || '').toUpperCase();
-    if (['NO TOCAR','FRAUDE'].includes(previa))
+    if (['NO TOCAR','FRAUDE','INSTALADO'].includes(previa))
       return res.status(409).json({ ok: false, mensaje: `Tu tipificación está protegida (${previa}) y no se puede cambiar` });
     // El asesor previo SÍ puede finalizar (VENTA CERRADA / SIN COBERTURA) si recontactó
     // al cliente; la base tomará esa como la más reciente.
