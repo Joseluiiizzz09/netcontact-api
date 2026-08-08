@@ -202,6 +202,7 @@ async function registrarHistorial(conn, ventaId, actor, evento = {}) {
 
 // ===== POST /api/ventas =====
 router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req, res) => {
+  let conn;
   try {
     const v = req.body;
 
@@ -224,23 +225,54 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
     if (v.telefono2 && !/^\d+$/.test(String(v.telefono2)))
       return res.status(400).json({ ok: false, mensaje: 'El teléfono de referencia solo puede contener números.' });
 
-    if (req.user.cargo === 'asesor') {
-      if (!v.telefono1) return res.status(400).json({ ok: false, mensaje: 'El Teléfono Contacto es obligatorio.' });
-      const valido = await esTelefonoVentaCerradaHoy(db, req.user.id, v.telefono1);
-      if (!valido) return res.status(400).json({ ok: false, mensaje: 'El teléfono de contacto no corresponde a una VENTA CERRADA del día para este asesor.' });
-      const [yaUsado] = await db.query(
-        `SELECT id FROM ventas WHERE TRIM(COALESCE(telefono1,'')) = ? LIMIT 1`,
-        [String(v.telefono1).trim()]
-      );
-      if (yaUsado.length > 0)
-        return res.status(400).json({ ok: false, mensaje: 'Este número ya fue registrado en otra venta. No puede ser usado nuevamente.' });
-    }
-
+    if (req.user.cargo === 'asesor' && !v.telefono1)
+      return res.status(400).json({ ok: false, mensaje: 'El Teléfono Contacto es obligatorio.' });
     const estadoFinal = req.user.cargo === 'asesor' ? 'VENTA' : (v.estado || 'VENTA').toUpperCase();
     if (!ESTADOS_VALIDOS_POST.includes(estadoFinal))
       return res.status(400).json({ ok: false, mensaje: `Estado inválido al crear. Solo se permite: ${ESTADOS_VALIDOS_POST.join(', ')}` });
 
-    const [result] = await db.query(`
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    let leadVenta = null;
+    let nombreAsesor = req.user.nombre || req.user.usuario || 'Asesor';
+    if (req.user.cargo === 'asesor') {
+      if (v.leadId) {
+        const [usuarios] = await conn.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+        nombreAsesor = usuarios[0]?.nombre || nombreAsesor;
+        const [leads] = await conn.query(`SELECT * FROM leads WHERE id = ? AND TRIM(n1) = ? FOR UPDATE`, [v.leadId, String(v.telefono1).trim()]);
+        if (!leads.length) {
+          await conn.rollback();
+          return res.status(400).json({ ok: false, mensaje: 'El número seleccionado no corresponde al lead indicado.' });
+        }
+        leadVenta = leads[0];
+        let historial = [];
+        try { historial = JSON.parse(leadVenta.historial || '[]'); } catch { historial = []; }
+        const participo = leadVenta.asesor_id === req.user.id || historial.some(h =>
+          (h?.asesor || '').trim() === nombreAsesor.trim() || (h?.asesorAnterior || '').trim() === nombreAsesor.trim()
+        );
+        if (!participo) {
+          await conn.rollback();
+          return res.status(403).json({ ok: false, mensaje: 'No puedes registrar una venta con un número que no trabajaste.' });
+        }
+      } else {
+        const valido = await esTelefonoVentaCerradaHoy(conn, req.user.id, v.telefono1);
+        if (!valido) {
+          await conn.rollback();
+          return res.status(400).json({ ok: false, mensaje: 'El teléfono de contacto no corresponde a una VENTA CERRADA del día para este asesor.' });
+        }
+      }
+      const [yaUsado] = await conn.query(
+        `SELECT id FROM ventas WHERE TRIM(COALESCE(telefono1,'')) = ? LIMIT 1`,
+        [String(v.telefono1).trim()]
+      );
+      if (yaUsado.length > 0) {
+        await conn.rollback();
+        return res.status(400).json({ ok: false, mensaje: 'Este número ya fue registrado en otra venta. No puede ser usado nuevamente.' });
+      }
+    }
+
+    const [result] = await conn.query(`
       INSERT INTO ventas (
         asesor_id, tipo_doc, dni, nombre, email,
         telefono1, telefono2, departamento, provincia, distrito,
@@ -259,10 +291,42 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       parseInt(v.cantDecos)||0, parseInt(v.cantMesh)||0,
       v.plano||null, estadoFinal, v.obs||null
     ]);
+
+    if (leadVenta) {
+      let historial = [];
+      try { historial = JSON.parse(leadVenta.historial || '[]'); } catch { historial = []; }
+      const ahora = new Date();
+      const peru = new Date(ahora.getTime() + ahora.getTimezoneOffset()*60000 + (-5*60*60000));
+      const hora = String(peru.getHours()).padStart(2,'0') + ':' + String(peru.getMinutes()).padStart(2,'0');
+      const fecha = fechaPeruHoy();
+      historial.push({
+        tipo: 'TIPIF_VEND', asesor: nombreAsesor, tipif: 'VENTA CERRADA',
+        ts: Date.now(), hora, fecha, ventaCompleta: true, ventaId: result.insertId,
+      });
+      for (let i = historial.length - 2; i >= 0; i--) {
+        const h = historial[i];
+        if ((h?.asesorAnterior || '').trim() === nombreAsesor.trim()) {
+          h.tipifVendAntes = 'VENTA CERRADA';
+          break;
+        }
+      }
+      const doc = `${v.tipoDoc || 'DNI'}: ${String(v.dni || '').trim()}`;
+      const obsActual = String(leadVenta.obs_asesor || '').trim();
+      const obsFinal = !obsActual ? doc : obsActual.toUpperCase().includes(doc.toUpperCase()) ? obsActual : `${obsActual} | ${doc}`;
+      await conn.query(
+        `UPDATE leads SET tipif_vend='VENTA CERRADA', tipif_hora=?, obs_asesor=?, historial=? WHERE id=?`,
+        [hora, obsFinal, JSON.stringify(historial), leadVenta.id]
+      );
+    }
+
+    await conn.commit();
     res.json({ ok: true, id: result.insertId, mensaje: 'Venta guardada' });
   } catch(e) {
+    if (conn) await conn.rollback().catch(() => {});
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al guardar venta' });
+  } finally {
+    if (conn) conn.release();
   }
 });
 
