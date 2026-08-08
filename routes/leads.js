@@ -76,7 +76,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const errGet = validar([errorFecha(fecha, 'fecha')]);
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
 
-    let sql = `SELECT l.*, u.nombre as asesor_nombre_db FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
+    let sql = `SELECT l.*, u.nombre as asesor_nombre_db,
+      EXISTS(SELECT 1 FROM ventas vv WHERE TRIM(vv.telefono1) = TRIM(l.n1)) AS venta_confirmada
+      FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
     const params = [];
 
     if (req.user.cargo === 'asesor') {
