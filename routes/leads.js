@@ -646,12 +646,34 @@ function registrarTipifEvent(historial, asesor, tipif) {
 // PATCH /api/leads/:id/tipif
 router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
   try {
-    const { tipif_vend } = req.body;
+    const { tipif_vend, tipo_doc, documento, distrito, coordenadas } = req.body;
+    const tipifNormalizada = String(tipif_vend || '').trim().toUpperCase();
     if (tipif_vend && String(tipif_vend).length > 200)
       return res.status(400).json({ ok: false, mensaje: 'tipif_vend no puede superar 200 caracteres' });
+    let documentoTexto = '';
+    if (tipifNormalizada === 'PREVENTA') {
+      const tipoDoc = String(tipo_doc || '').trim().toUpperCase();
+      const doc = String(documento || '').trim();
+      const longitudes = { DNI:8, CE:9, RUC:11 };
+      if (!longitudes[tipoDoc]) return res.status(400).json({ ok:false, mensaje:'Tipo de documento invalido' });
+      if (!new RegExp(`^\\d{${longitudes[tipoDoc]}}$`).test(doc))
+        return res.status(400).json({ ok:false, mensaje:`${tipoDoc} debe tener exactamente ${longitudes[tipoDoc]} digitos` });
+      documentoTexto = `${tipoDoc}: ${doc}`;
+    }
+    if (tipifNormalizada === 'SIN COBERTURA') {
+      const erroresDetalle = validar([
+        errorTexto(distrito, 'distrito', { requerido:true, max:100 }),
+        errorTexto(coordenadas, 'coordenadas', { requerido:true, max:255 }),
+      ]);
+      if (erroresDetalle) return res.status(400).json({ ok:false, mensaje:erroresDetalle[0] });
+    }
     const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     const lead = rows[0];
+    const obsActual = String(lead.obs_asesor || '').trim();
+    const obsFinal = documentoTexto && !obsActual.toUpperCase().includes(documentoTexto.toUpperCase())
+      ? (obsActual ? `${obsActual} | ${documentoTexto}` : documentoTexto)
+      : obsActual;
     const esAsesor = req.user.cargo === 'asesor';
     const esActual = lead.asesor_id === req.user.id;
     if (esAsesor && String(tipif_vend || '').trim().toUpperCase() === 'INSTALADO')
@@ -663,8 +685,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // del titular + registra el evento (con ts) a nombre del titular actual.
     if (!esAsesor || esActual) {
       registrarTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '');
-      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=? WHERE id=?`,
-        [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), req.params.id]);
+      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=?, distrito=IF(?='SIN COBERTURA',?,distrito), coordenadas=IF(?='SIN COBERTURA',?,coordenadas) WHERE id=?`,
+        [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
       return res.json({ ok: true, mensaje: 'Tipificación guardada' });
     }
 
@@ -685,7 +707,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // al cliente; la base tomará esa como la más reciente.
     historial[idx].tipifVendAntes = tipif_vend || '';
     registrarTipifEvent(historial, miNombre, tipif_vend || '');
-    await db.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(historial), req.params.id]);
+    await db.query(`UPDATE leads SET historial=?, obs_asesor=?, distrito=IF(?='SIN COBERTURA',?,distrito), coordenadas=IF(?='SIN COBERTURA',?,coordenadas) WHERE id=?`,
+      [JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
     res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al guardar tipificación' });

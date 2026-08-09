@@ -212,9 +212,25 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       errorDni(v.dni, v.tipoDoc || 'DNI'),
       errorEmail(v.email),
       errorEnum(v.tipoDoc, 'tipoDoc', TIPO_DOC_OK),
-      errorTexto(v.telefono1, 'telefono1', { max: 20 }),
+      errorTexto(v.telefono1, 'telefono1', { requerido: true, max: 20 }),
       errorTexto(v.telefono2, 'telefono2', { max: 20 }),
+      errorTexto(v.departamento, 'departamento', { requerido: true, max: 100 }),
+      errorTexto(v.provincia, 'provincia', { requerido: true, max: 100 }),
+      errorTexto(v.distrito, 'distrito', { requerido: true, max: 100 }),
+      errorTexto(v.direccion, 'direccion', { requerido: true, max: 1000 }),
+      errorTexto(v.coordenadas, 'coordenadas', { requerido: true, max: 255 }),
+      errorTexto(v.fechaNac, 'fechaNac', { requerido: true, max: 10 }),
       errorFecha(v.fechaNac, 'fechaNac'),
+      errorTexto(v.lugarNac, 'lugarNac', { requerido: true, max: 150 }),
+      errorTexto(v.padre, 'padre', { requerido: true, max: 150 }),
+      errorTexto(v.madre, 'madre', { requerido: true, max: 150 }),
+      errorTexto(v.cuotaInstalacion, 'cuotaInstalacion', { requerido: true, max: 100 }),
+      errorTexto(v.hogar, 'hogar', { requerido: true, max: 150 }),
+      errorTexto(v.tec, 'tecnologia', { requerido: true, max: 100 }),
+      errorTexto(v.paquete, 'paquete', { requerido: true, max: 255 }),
+      errorTexto(v.full, 'fullClaro', { requerido: true, max: 20 }),
+      errorTexto(v.plano, 'plano', { requerido: true, max: 100 }),
+      errorTexto(v.obs, 'observacion', { requerido: true, max: 1000 }),
       errorEnteroPositivo(v.cantDecos, 'cantDecos', { max: 10 }),
       errorEnteroPositivo(v.cantMesh,  'cantMesh',  { max: 10 }),
     ]);
@@ -224,6 +240,9 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       return res.status(400).json({ ok: false, mensaje: 'El teléfono de contacto solo puede contener números.' });
     if (v.telefono2 && !/^\d+$/.test(String(v.telefono2)))
       return res.status(400).json({ ok: false, mensaje: 'El teléfono de referencia solo puede contener números.' });
+
+    if (v.telefono2 && String(v.telefono1).trim() === String(v.telefono2).trim())
+      return res.status(400).json({ ok: false, mensaje: 'El telefono de referencia debe ser diferente al telefono principal.' });
 
     if (req.user.cargo === 'asesor' && !v.telefono1)
       return res.status(400).json({ ok: false, mensaje: 'El Teléfono Contacto es obligatorio.' });
