@@ -397,7 +397,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
 // Datos descriptivos que Back Office prepara para el asesor.
 router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
   try {
-    const { tipo_contacto, direccion, coordenadas, obs_back, distrito } = req.body;
+    const { tipo_contacto, direccion, coordenadas, obs_back, distrito, n1, n2 } = req.body;
     const errores = validar([
       errorTexto(tipo_contacto, 'tipo_contacto', { max: 20 }),
       errorTexto(direccion, 'direccion', { max: 1000 }),
@@ -407,6 +407,26 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
 
+    const n1Normalizado = n1 === undefined ? undefined : normalizarN1(n1);
+    const n2Normalizado = n2 === undefined ? undefined : (limpiarN2(n2) || '');
+    if (n1 !== undefined && n1Normalizado.length < 6) {
+      return res.status(400).json({ ok: false, mensaje: 'N1 debe contener al menos 6 dígitos' });
+    }
+    if (n2 !== undefined && String(n2 || '').trim() && !n2Normalizado) {
+      return res.status(400).json({ ok: false, mensaje: 'N2 debe contener entre 7 y 9 dígitos' });
+    }
+    if (n1Normalizado !== undefined) {
+      const [duplicados] = await db.query(
+        `SELECT otro.id FROM leads actual
+         INNER JOIN leads otro ON otro.fecha = actual.fecha AND otro.n1 = ? AND otro.id <> actual.id
+         WHERE actual.id = ? LIMIT 1`,
+        [n1Normalizado, req.params.id]
+      );
+      if (duplicados.length) {
+        return res.status(409).json({ ok: false, mensaje: 'Ese N1 ya existe en la fecha del lead' });
+      }
+    }
+
     const campos = [];
     const valores = [];
     if (tipo_contacto !== undefined) { campos.push('tipo_contacto=?'); valores.push(tipo_contacto || 'LLAMADA'); }
@@ -414,6 +434,8 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
     if (coordenadas   !== undefined) { campos.push('coordenadas=?');   valores.push(coordenadas || ''); }
     if (obs_back      !== undefined) { campos.push('obs_back=?');      valores.push(obs_back || ''); }
     if (distrito      !== undefined) { campos.push('distrito=?');      valores.push(distrito || ''); }
+    if (n1Normalizado !== undefined) { campos.push('n1=?');            valores.push(n1Normalizado); }
+    if (n2Normalizado !== undefined) { campos.push('n2=?');            valores.push(n2Normalizado || null); }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'No hay datos para actualizar' });
 
     valores.push(req.params.id);
