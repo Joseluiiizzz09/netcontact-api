@@ -379,6 +379,27 @@ async function initDB() {
     for (const idx of indices) { await conn.query(idx).catch(() => {}); }
     console.log('Indices de rendimiento verificados');
 
+    // Repara ventas creadas desde la vista delegada de Jefatura/Backoffice.
+    // El token usado al guardar pertenecía al administrador y podía dejar la
+    // venta a su nombre, aunque el teléfono siguiera asignado a un asesor. Esa
+    // inconsistencia hacía que el asesor dejara de ver tanto el lead como la
+    // venta. Solo se corrigen propietarios administrativos y coincidencias
+    // exactas con un lead actualmente asignado a un usuario asesor activo.
+    const [ventasDelegadas] = await conn.query(`
+      UPDATE ventas v
+      INNER JOIN usuarios propietario ON propietario.id = v.asesor_id
+      INNER JOIN leads l ON TRIM(l.n1) = TRIM(v.telefono1)
+      INNER JOIN usuarios asesor ON asesor.id = l.asesor_id
+      SET v.asesor_id = asesor.id
+      WHERE propietario.cargo IN ('jefatura', 'backoffice', 'usuarios')
+        AND asesor.cargo = 'asesor'
+        AND asesor.activo = 1
+        AND l.asesor_id IS NOT NULL
+    `);
+    if (ventasDelegadas.affectedRows > 0) {
+      console.log(`Ventas delegadas reasignadas al asesor correcto: ${ventasDelegadas.affectedRows}`);
+    }
+
     // -- USUARIO ADMIN INICIAL --
     const [rows] = await conn.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);
     if (!rows.length) {

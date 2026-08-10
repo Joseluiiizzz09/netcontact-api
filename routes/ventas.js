@@ -254,17 +254,48 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
     await conn.beginTransaction();
 
     let leadVenta = null;
+    let asesorVentaId = Number(req.user.id);
     let nombreAsesor = req.user.nombre || req.user.usuario || 'Asesor';
-    if (req.user.cargo === 'asesor') {
-      if (v.leadId) {
-        const [usuarios] = await conn.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
-        nombreAsesor = usuarios[0]?.nombre || nombreAsesor;
-        const [leads] = await conn.query(`SELECT * FROM leads WHERE id = ? AND TRIM(n1) = ? FOR UPDATE`, [v.leadId, String(v.telefono1).trim()]);
-        if (!leads.length) {
+
+    // La vista delegada conserva el token de Jefatura/Backoffice. La venta
+    // debe pertenecer al asesor asignado al lead, no al usuario administrador.
+    if (v.leadId) {
+      const [leads] = await conn.query(
+        `SELECT * FROM leads WHERE id = ? AND TRIM(n1) = ? FOR UPDATE`,
+        [v.leadId, String(v.telefono1).trim()]
+      );
+      if (!leads.length) {
+        await conn.rollback();
+        return res.status(400).json({ ok: false, mensaje: 'El número seleccionado no corresponde al lead indicado.' });
+      }
+      leadVenta = leads[0];
+
+      if (req.user.cargo !== 'asesor') {
+        if (!leadVenta.asesor_id) {
           await conn.rollback();
-          return res.status(400).json({ ok: false, mensaje: 'El número seleccionado no corresponde al lead indicado.' });
+          return res.status(400).json({ ok: false, mensaje: 'El lead no tiene un asesor asignado.' });
         }
-        leadVenta = leads[0];
+        asesorVentaId = Number(leadVenta.asesor_id);
+        nombreAsesor = leadVenta.asesor_nombre || nombreAsesor;
+      }
+    } else if (req.user.cargo !== 'asesor' && (v.asesor_id || v.asesorId)) {
+      const asesorSolicitado = Number(v.asesor_id || v.asesorId);
+      const [asesores] = await conn.query(
+        `SELECT id, nombre FROM usuarios WHERE id = ? AND cargo = 'asesor' AND activo = 1 LIMIT 1`,
+        [asesorSolicitado]
+      );
+      if (!asesores.length) {
+        await conn.rollback();
+        return res.status(400).json({ ok: false, mensaje: 'El asesor indicado no existe o no está activo.' });
+      }
+      asesorVentaId = Number(asesores[0].id);
+      nombreAsesor = asesores[0].nombre || nombreAsesor;
+    }
+
+    if (req.user.cargo === 'asesor') {
+      const [usuarios] = await conn.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+      nombreAsesor = usuarios[0]?.nombre || nombreAsesor;
+      if (leadVenta) {
         let historial = [];
         try { historial = JSON.parse(leadVenta.historial || '[]'); } catch { historial = []; }
         const participo = leadVenta.asesor_id === req.user.id || historial.some(h =>
@@ -300,7 +331,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
         full_claro, cant_decos, cant_mesh, plano, estado, observacion
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `, [
-      req.user.id, v.tipoDoc||'DNI', v.dni||null, v.nombre||null, v.email||null,
+      asesorVentaId, v.tipoDoc||'DNI', v.dni||null, v.nombre||null, v.email||null,
       v.telefono1||null, v.telefono2||null, v.departamento||null,
       v.provincia||null, v.distrito||null, v.direccion||null,
       v.coordenadas||null, v.fechaNac||null, v.lugarNac||null,
@@ -339,7 +370,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
     }
 
     await conn.commit();
-    res.json({ ok: true, id: result.insertId, mensaje: 'Venta guardada' });
+    res.json({ ok: true, id: result.insertId, asesor_id: asesorVentaId, mensaje: 'Venta guardada' });
   } catch(e) {
     if (conn) await conn.rollback().catch(() => {});
     console.error(e);
