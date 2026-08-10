@@ -117,6 +117,8 @@ async function initDB() {
         tipo_contacto VARCHAR(20)  DEFAULT 'LLAMADA',
         direccion     TEXT,
         coordenadas   VARCHAR(255) DEFAULT '',
+        distrito_sin_cobertura VARCHAR(100) DEFAULT '',
+        coordenadas_sin_cobertura VARCHAR(255) DEFAULT '',
         obs_back      TEXT,
         tipif_back    VARCHAR(100) DEFAULT '',
         derivado_por_id INT NULL,
@@ -184,6 +186,8 @@ async function initDB() {
       ['tipo_contacto', "VARCHAR(20) DEFAULT 'LLAMADA'"],
       ['direccion',     'TEXT'],
       ['coordenadas',   "VARCHAR(255) DEFAULT ''"],
+      ['distrito_sin_cobertura', "VARCHAR(100) DEFAULT ''"],
+      ['coordenadas_sin_cobertura', "VARCHAR(255) DEFAULT ''"],
       ['obs_back',      'TEXT'],
     ];
     for (const [columna, definicion] of columnasLead) {
@@ -399,6 +403,21 @@ async function initDB() {
     if (ventasDelegadas.affectedRows > 0) {
       console.log(`Ventas delegadas reasignadas al asesor correcto: ${ventasDelegadas.affectedRows}`);
     }
+
+    // Migra una sola vez los datos de SIN COBERTURA que históricamente se
+    // guardaron en los campos base del cliente. Desde ahora viven en columnas
+    // exclusivas para el libro de Back Data y no contaminan Zona/Ubicación.
+    await conn.query(`
+      UPDATE leads
+      SET distrito_sin_cobertura = distrito,
+          coordenadas_sin_cobertura = coordenadas,
+          distrito = '',
+          coordenadas = ''
+      WHERE UPPER(tipif_vend) = 'SIN COBERTURA'
+        AND COALESCE(distrito_sin_cobertura, '') = ''
+        AND COALESCE(coordenadas_sin_cobertura, '') = ''
+        AND (COALESCE(distrito, '') <> '' OR COALESCE(coordenadas, '') <> '')
+    `);
 
     // -- USUARIO ADMIN INICIAL --
     const [rows] = await conn.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);

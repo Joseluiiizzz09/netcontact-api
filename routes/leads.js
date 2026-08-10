@@ -671,9 +671,15 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     const lead = rows[0];
     const obsActual = String(lead.obs_asesor || '').trim();
-    const obsFinal = documentoTexto && !obsActual.toUpperCase().includes(documentoTexto.toUpperCase())
+    let obsFinal = documentoTexto && !obsActual.toUpperCase().includes(documentoTexto.toUpperCase())
       ? (obsActual ? `${obsActual} | ${documentoTexto}` : documentoTexto)
       : obsActual;
+    if (tipifNormalizada === 'SIN COBERTURA') {
+      const coordenadasTexto = `COORDENADAS: ${String(coordenadas || '').trim()}`;
+      if (!obsFinal.toUpperCase().includes(coordenadasTexto.toUpperCase())) {
+        obsFinal = obsFinal ? `${obsFinal} | ${coordenadasTexto}` : coordenadasTexto;
+      }
+    }
     const esAsesor = req.user.cargo === 'asesor';
     const esActual = lead.asesor_id === req.user.id;
     if (esAsesor && String(tipif_vend || '').trim().toUpperCase() === 'INSTALADO')
@@ -685,7 +691,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // del titular + registra el evento (con ts) a nombre del titular actual.
     if (!esAsesor || esActual) {
       registrarTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '');
-      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=?, distrito=IF(?='SIN COBERTURA',?,distrito), coordenadas=IF(?='SIN COBERTURA',?,coordenadas) WHERE id=?`,
+      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=?, distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
         [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
       return res.json({ ok: true, mensaje: 'Tipificación guardada' });
     }
@@ -707,7 +713,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // al cliente; la base tomará esa como la más reciente.
     historial[idx].tipifVendAntes = tipif_vend || '';
     registrarTipifEvent(historial, miNombre, tipif_vend || '');
-    await db.query(`UPDATE leads SET historial=?, obs_asesor=?, distrito=IF(?='SIN COBERTURA',?,distrito), coordenadas=IF(?='SIN COBERTURA',?,coordenadas) WHERE id=?`,
+    await db.query(`UPDATE leads SET historial=?, obs_asesor=?, distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
       [JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
     res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
   } catch(e) {
