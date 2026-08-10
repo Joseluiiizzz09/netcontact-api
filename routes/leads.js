@@ -472,6 +472,15 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: `Numero prohibido: ${String(lead.tipif_vend).toUpperCase()}` });
     }
+    const n1Clean = String(lead.n1 || '').trim();
+    const [ventasProtegidas] = await conn.query(
+      `SELECT id FROM ventas WHERE TRIM(telefono1) = ? AND UPPER(estado) IN ('INSTALADO', 'EN_EJECUCION') LIMIT 1`,
+      [n1Clean]
+    );
+    if (ventasProtegidas.length > 0) {
+      await conn.rollback();
+      return res.status(409).json({ ok: false, mensaje: 'Número protegido: tiene instalación o ejecución activa en seguimiento' });
+    }
 
     const [usuarios] = await conn.query(`SELECT id, nombre FROM usuarios WHERE nombre = ? AND activo = 1 LIMIT 1`, [asesor_nombre.trim()]);
     if (!usuarios.length) {
@@ -674,12 +683,6 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     let obsFinal = documentoTexto && !obsActual.toUpperCase().includes(documentoTexto.toUpperCase())
       ? (obsActual ? `${obsActual} | ${documentoTexto}` : documentoTexto)
       : obsActual;
-    if (tipifNormalizada === 'SIN COBERTURA') {
-      const coordenadasTexto = `COORDENADAS: ${String(coordenadas || '').trim()}`;
-      if (!obsFinal.toUpperCase().includes(coordenadasTexto.toUpperCase())) {
-        obsFinal = obsFinal ? `${obsFinal} | ${coordenadasTexto}` : coordenadasTexto;
-      }
-    }
     const esAsesor = req.user.cargo === 'asesor';
     const esActual = lead.asesor_id === req.user.id;
     if (esAsesor && String(tipif_vend || '').trim().toUpperCase() === 'INSTALADO')
