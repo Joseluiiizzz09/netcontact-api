@@ -77,7 +77,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
 
     let sql = `SELECT l.*, u.nombre as asesor_nombre_db,
-      EXISTS(SELECT 1 FROM ventas vv WHERE TRIM(vv.telefono1) = TRIM(l.n1)) AS venta_confirmada
+      EXISTS(SELECT 1 FROM ventas vv WHERE TRIM(vv.telefono1) = TRIM(l.n1)) AS venta_confirmada,
+      (SELECT vv.asesor_id FROM ventas vv WHERE TRIM(vv.telefono1) = TRIM(l.n1) ORDER BY vv.id DESC LIMIT 1) AS venta_asesor_id,
+      (SELECT uv.nombre FROM ventas vv LEFT JOIN usuarios uv ON uv.id = vv.asesor_id WHERE TRIM(vv.telefono1) = TRIM(l.n1) ORDER BY vv.id DESC LIMIT 1) AS venta_asesor_nombre
       FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
     const params = [];
     let visorAsesorId = null;
@@ -134,7 +136,13 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
             : obsAsesor.replace(documentoEnObs, '').replace(/^\s*\|\s*|\s*\|\s*$/g, '').trim();
         }
       }
-      return { ...l, obs_asesor: obsAsesor, historial };
+      const ventaCerrada = Number(l.venta_confirmada) === 1 && l.venta_asesor_id;
+      return {
+        ...l,
+        ...(ventaCerrada ? { asesor_id:l.venta_asesor_id, asesor_nombre:l.venta_asesor_nombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
+        obs_asesor: obsAsesor,
+        historial,
+      };
     })});
   } catch(e) {
     console.error(e);
