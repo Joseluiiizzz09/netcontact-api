@@ -65,9 +65,10 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    const extOk = ['.mp3','.wav','.ogg','.m4a','.mp4','.webm'].includes(path.extname(file.originalname).toLowerCase());
-    if (extOk) cb(null, true);
-    else cb(new Error('Solo archivos de audio'));
+    const esMp3 = path.extname(file.originalname).toLowerCase() === '.mp3'
+      && ['audio/mpeg', 'audio/mp3', 'application/octet-stream'].includes(String(file.mimetype || '').toLowerCase());
+    if (esMp3) cb(null, true);
+    else cb(new Error('Solo se permite un archivo MP3'));
   },
   limits: { fileSize: 50 * 1024 * 1024 },
 });
@@ -92,22 +93,16 @@ const uploadFoto = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
 });
 
-// Verifica los primeros bytes del archivo para confirmar que realmente es audio
-function esArchivoAudioValido(filePath) {
+// Verifica los primeros bytes para impedir que otro formato sea renombrado a .mp3.
+function esArchivoMp3Valido(filePath) {
   try {
-    const buffer = Buffer.alloc(12);
+    const buffer = Buffer.alloc(3);
     const fd = fs.openSync(filePath, 'r');
-    fs.readSync(fd, buffer, 0, 12, 0);
+    fs.readSync(fd, buffer, 0, 3, 0);
     fs.closeSync(fd);
-
-    if (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) return true; // MP3 con ID3
-    if (buffer[0] === 0xFF && (buffer[1] & 0xE0) === 0xE0)               return true; // MP3 sync
-    if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) return true; // WAV RIFF
-    if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) return true; // OGG
-    if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) return true; // WebM
-    if (buffer[4] === 0x66 && buffer[5] === 0x74 && buffer[6] === 0x79 && buffer[7] === 0x70) return true; // MP4/M4A ftyp
-    return false;
-  } catch(e) {
+    return (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33)
+      || (buffer[0] === 0xFF && (buffer[1] & 0xE0) === 0xE0);
+  } catch (e) {
     return false;
   }
 }
@@ -590,9 +585,9 @@ router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req
     }
 
     // Verificar bytes reales del archivo
-    if (!esArchivoAudioValido(req.file.path)) {
+    if (!esArchivoMp3Valido(req.file.path)) {
       fs.unlinkSync(req.file.path);
-      return res.status(400).json({ ok: false, mensaje: 'El archivo no es un audio válido' });
+      return res.status(400).json({ ok: false, mensaje: 'El archivo debe ser un MP3 válido' });
     }
 
     const rutaRelativa = 'uploads/audios/' + req.file.filename;
@@ -769,7 +764,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     const [rows] = await conn.query(`
       SELECT id, asesor_id, estado, obs_backoffice, observacion,
              obs_programacion, sot, fecha_programada, obs_validacion, obs_supgrab,
-             estado_supgrab, estado_grab, obs_seguimiento,
+             estado_supgrab, estado_grab, audio_path, obs_seguimiento,
              tramo_seguimiento, motivo_seguimiento
         FROM ventas
        WHERE id = ?
@@ -793,6 +788,12 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       return res.status(400).json({ ok: false, mensaje: 'estado_grab inválido' });
     if (estado_supgrab !== undefined && !ESTADOS_SUPGRAB_OK.includes(String(estado_supgrab).toLowerCase()))
       return res.status(400).json({ ok: false, mensaje: 'estado_supgrab inválido' });
+
+    if (estado_grab !== undefined
+        && String(estado_grab).toLowerCase() === 'grabado'
+        && !String(rows[0].audio_path || '').trim()) {
+      return res.status(400).json({ ok: false, mensaje: 'Debes subir un archivo MP3 antes de marcar la venta como GRABADO' });
+    }
 
     if (tramo_seguimiento !== undefined && tramo_seguimiento !== '' && !TRAMOS_SEGUIMIENTO_OK.includes(tramo_seguimiento))
       return res.status(400).json({ ok: false, mensaje: 'tramo_seguimiento inválido' });
