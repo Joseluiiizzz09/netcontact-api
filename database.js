@@ -185,6 +185,7 @@ async function initDB() {
       ['direccion',     'TEXT'],
       ['coordenadas',   "VARCHAR(255) DEFAULT ''"],
       ['obs_back',      'TEXT'],
+      ['etiqueta',      "VARCHAR(120) DEFAULT ''"],
     ];
     for (const [columna, definicion] of columnasLead) {
       await conn.query(`ALTER TABLE leads ADD COLUMN ${columna} ${definicion}`)
