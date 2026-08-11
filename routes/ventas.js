@@ -361,8 +361,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
         }
       }
       const doc = `${v.tipoDoc || 'DNI'}: ${String(v.dni || '').trim()}`;
-      const obsActual = String(leadVenta.obs_asesor || '').trim();
-      const obsFinal = !obsActual ? doc : obsActual.toUpperCase().includes(doc.toUpperCase()) ? obsActual : `${obsActual} | ${doc}`;
+      const obsFinal = doc;
       await conn.query(
         `UPDATE leads SET tipif_vend='VENTA CERRADA', tipif_hora=?, obs_asesor=?, historial=? WHERE id=?`,
         [hora, obsFinal, JSON.stringify(historial), leadVenta.id]

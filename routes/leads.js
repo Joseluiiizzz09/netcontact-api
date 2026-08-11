@@ -684,10 +684,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       ? (obsActual ? `${obsActual} | ${documentoTexto}` : documentoTexto)
       : obsActual;
     if (tipifNormalizada === 'SIN COBERTURA') {
-      const coordenadasTexto = `COORDENADAS: ${String(coordenadas || '').trim()}`;
-      if (!obsFinal.toUpperCase().includes(coordenadasTexto.toUpperCase())) {
-        obsFinal = obsFinal ? `${obsFinal} | ${coordenadasTexto}` : coordenadasTexto;
-      }
+      obsFinal = String(coordenadas || '').trim();
     }
     const esAsesor = req.user.cargo === 'asesor';
     const esActual = lead.asesor_id === req.user.id;
