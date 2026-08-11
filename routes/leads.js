@@ -525,6 +525,26 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
   }
 });
 
+// PATCH /api/leads/etiquetar — aplica una etiqueta (p.ej. "MASIVO") a varios leads
+// seleccionados. Debe declararse ANTES de PATCH /:id para no ser capturado por él.
+router.patch('/etiquetar', auth(ROLES_BO), async (req, res) => {
+  try {
+    const { ids, etiqueta } = req.body;
+    if (!Array.isArray(ids) || !ids.length)
+      return res.status(400).json({ ok: false, mensaje: 'No hay números seleccionados' });
+    const idsNum = [...new Set(ids.map(Number).filter(Number.isInteger))];
+    if (!idsNum.length) return res.status(400).json({ ok: false, mensaje: 'IDs inválidos' });
+    if (idsNum.length > 1000) return res.status(400).json({ ok: false, mensaje: 'Máximo 1000 números por operación' });
+    const et = String(etiqueta || '').trim().slice(0, 120);
+    const placeholders = idsNum.map(() => '?').join(',');
+    const [r] = await db.query(`UPDATE leads SET etiqueta=? WHERE id IN (${placeholders})`, [et, ...idsNum]);
+    res.json({ ok: true, actualizados: r.affectedRows, etiqueta: et });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al aplicar la etiqueta' });
+  }
+});
+
 // PATCH /api/leads/:id
 router.patch('/:id', auth(ROLES_BO), async (req, res) => {
   try {
