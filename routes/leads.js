@@ -526,8 +526,8 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
 });
 
 // PATCH /api/leads/etiquetar — aplica una etiqueta (p.ej. "MASIVO") a varios leads
-// seleccionados. Debe declararse ANTES de PATCH /:id para no ser capturado por él.
-router.patch('/etiquetar', auth(ROLES_BO), async (req, res) => {
+// seleccionados. Solo Jefatura/Gerencia. Debe declararse ANTES de PATCH /:id.
+router.patch('/etiquetar', auth(['jefatura']), async (req, res) => {
   try {
     const { ids, etiqueta } = req.body;
     if (!Array.isArray(ids) || !ids.length)
