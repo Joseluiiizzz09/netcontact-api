@@ -80,6 +80,8 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       EXISTS(SELECT 1 FROM ventas vv WHERE TRIM(vv.telefono1) = TRIM(l.n1)) AS venta_confirmada
       FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
     const params = [];
+    let visorAsesorId = null;
+    let visorAsesorNombre = '';
 
     if (req.user.cargo === 'asesor') {
       // Base del asesor: leads asignados AHORA a él + los que trabajó antes
@@ -87,6 +89,8 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       // base al ser rotado a otro asesor; conserva su registro de lo trabajado.
       const [uNom] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
       const nom = uNom[0]?.nombre || '';
+      visorAsesorId = req.user.id;
+      visorAsesorNombre = nom;
       // El nombre debe figurar como ASESOR titular de alguna asignación ("asesor":"nom"),
       // no como asesorAnterior/rotadoPor. Así, al quitar su asignación desaparece de su base.
       sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"asesor":"', ?, '"%'))`;
@@ -100,17 +104,38 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       )`;
       params.push(req.user.id);
     } else if (asesor_id) {
-      sql += ` AND l.asesor_id = ?`; params.push(asesor_id);
+      const [uNom] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [asesor_id]);
+      const nom = uNom[0]?.nombre || '';
+      visorAsesorId = Number(asesor_id);
+      visorAsesorNombre = nom;
+      sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"asesor":"', ?, '"%'))`;
+      params.push(asesor_id, nom);
+      sql += ` AND (
+        NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
+        OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
+      )`;
+      params.push(asesor_id);
     }
 
     if (fecha) { sql += ` AND l.fecha = ?`; params.push(fecha); }
     sql += ` ORDER BY l.created_at DESC`;
 
     const [data] = await db.query(sql, params);
-    res.json({ ok: true, data: data.map(l => ({
-      ...l,
-      historial: (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })()
-    }))});
+    res.json({ ok: true, data: data.map(l => {
+      const historial = (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })();
+      let obsAsesor = l.obs_asesor || '';
+      const documentoEnObs = obsAsesor.match(/\b(DNI|CE|RUC)\s*:\s*\d+/i)?.[0] || '';
+      if (visorAsesorId && visorAsesorNombre && documentoEnObs) {
+        const preventas = historial.filter(h => h?.tipo === 'TIPIF_VEND' && String(h?.tipif || '').trim().toUpperCase() === 'PREVENTA');
+        const ultimaPreventa = preventas[preventas.length - 1];
+        if (ultimaPreventa) {
+          obsAsesor = String(ultimaPreventa.asesor || '').trim() === visorAsesorNombre.trim()
+            ? (ultimaPreventa.documento || documentoEnObs)
+            : obsAsesor.replace(documentoEnObs, '').replace(/^\s*\|\s*|\s*\|\s*$/g, '').trim();
+        }
+      }
+      return { ...l, obs_asesor: obsAsesor, historial };
+    })});
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener leads' });
@@ -644,11 +669,14 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
 // principal muestra el de ts más reciente ("la más reciente gana"), y el historial de
 // tipificaciones muestra todo el log. Evita duplicar si el último evento ya es del
 // mismo asesor con el mismo valor.
-function registrarTipifEvent(historial, asesor, tipif) {
+function registrarTipifEvent(historial, asesor, tipif, datos = {}) {
   const eventos = historial.filter(h => h?.tipo === 'TIPIF_VEND');
   const ultimo = eventos[eventos.length - 1];
-  if (ultimo && (ultimo.asesor || '') === (asesor || '') && (ultimo.tipif || '') === (tipif || '')) return historial;
-  historial.push({ tipo:'TIPIF_VEND', asesor: asesor || '', tipif: tipif || '', ts: Date.now(), hora: horaPeruAhora(), fecha: fechaPeruHoy() });
+  if (ultimo && (ultimo.asesor || '') === (asesor || '') && (ultimo.tipif || '') === (tipif || '')) {
+    if (datos.documento) ultimo.documento = datos.documento;
+    return historial;
+  }
+  historial.push({ tipo:'TIPIF_VEND', asesor: asesor || '', tipif: tipif || '', ...datos, ts: Date.now(), hora: horaPeruAhora(), fecha: fechaPeruHoy() });
   return historial;
 }
 
@@ -696,7 +724,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // Titular actual, o cargos de gestión (backoffice, etc.): actualiza la tipif vigente
     // del titular + registra el evento (con ts) a nombre del titular actual.
     if (!esAsesor || esActual) {
-      registrarTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '');
+      registrarTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
       await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=?, distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
         [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
       return res.json({ ok: true, mensaje: 'Tipificación guardada' });
@@ -718,7 +746,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // El asesor previo SÍ puede finalizar (VENTA CERRADA / SIN COBERTURA) si recontactó
     // al cliente; la base tomará esa como la más reciente.
     historial[idx].tipifVendAntes = tipif_vend || '';
-    registrarTipifEvent(historial, miNombre, tipif_vend || '');
+    if (documentoTexto) historial[idx].documento = documentoTexto;
+    registrarTipifEvent(historial, miNombre, tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
     await db.query(`UPDATE leads SET historial=?, obs_asesor=?, distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
       [JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
     res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
