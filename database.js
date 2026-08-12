@@ -364,23 +364,31 @@ async function initDB() {
     }
 
     // -- INDICES PARA RENDIMIENTO (150+ usuarios) --
+    // MySQL 8 no admite CREATE INDEX IF NOT EXISTS. Se consulta el catálogo
+    // antes de crear cada índice para que el arranque sea idempotente.
     const indices = [
-      'CREATE INDEX IF NOT EXISTS idx_ventas_created ON ventas(created_at)',
-      'CREATE INDEX IF NOT EXISTS idx_ventas_asesor ON ventas(asesor_id)',
-      'CREATE INDEX IF NOT EXISTS idx_ventas_estado ON ventas(estado)',
-      'CREATE INDEX IF NOT EXISTS idx_ventas_dni ON ventas(dni)',
-      'CREATE INDEX IF NOT EXISTS idx_ventas_grab ON ventas(estado_grab)',
-      'CREATE INDEX IF NOT EXISTS idx_ventas_supgrab ON ventas(estado_supgrab)',
-      'CREATE INDEX IF NOT EXISTS idx_leads_fecha ON leads(fecha)',
-      'CREATE INDEX IF NOT EXISTS idx_leads_asesor ON leads(asesor_id)',
-      'CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at)',
-      'CREATE INDEX IF NOT EXISTS idx_leads_n1 ON leads(n1)',
-      'CREATE INDEX IF NOT EXISTS idx_frases_created ON frases(created_at)',
-      'CREATE INDEX IF NOT EXISTS idx_fotos_venta ON venta_fotos(venta_id)',
-      'CREATE INDEX IF NOT EXISTS idx_venta_asignaciones_venta ON venta_asignaciones(venta_id, created_at)',
-      'CREATE INDEX IF NOT EXISTS idx_venta_historial_venta ON venta_historial(venta_id, created_at)',
+      ['idx_ventas_created', 'ventas', 'created_at'],
+      ['idx_ventas_asesor', 'ventas', 'asesor_id'],
+      ['idx_ventas_estado', 'ventas', 'estado'],
+      ['idx_ventas_dni', 'ventas', 'dni'],
+      ['idx_ventas_grab', 'ventas', 'estado_grab'],
+      ['idx_ventas_supgrab', 'ventas', 'estado_supgrab'],
+      ['idx_leads_fecha', 'leads', 'fecha'],
+      ['idx_leads_asesor', 'leads', 'asesor_id'],
+      ['idx_leads_created', 'leads', 'created_at'],
+      ['idx_leads_n1', 'leads', 'n1'],
+      ['idx_frases_created', 'frases', 'created_at'],
+      ['idx_fotos_venta', 'venta_fotos', 'venta_id'],
+      ['idx_venta_asignaciones_venta', 'venta_asignaciones', 'venta_id, created_at'],
+      ['idx_venta_historial_venta', 'venta_historial', 'venta_id, created_at'],
     ];
-    for (const idx of indices) { await conn.query(idx).catch(() => {}); }
+    for (const [nombre, tabla, columnas] of indices) {
+      const [[existe]] = await conn.query(`
+        SELECT COUNT(*) AS total FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?
+      `, [tabla, nombre]);
+      if (!existe.total) await conn.query(`CREATE INDEX ${nombre} ON ${tabla}(${columnas})`);
+    }
     console.log('Indices de rendimiento verificados');
 
     // Repara ventas creadas desde la vista delegada de Jefatura/Backoffice.
