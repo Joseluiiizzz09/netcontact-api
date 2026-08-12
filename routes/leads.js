@@ -30,6 +30,11 @@ function normalizarN1(valor) {
   return String(valor || '').replace(/\D+/g, '');
 }
 
+function normalizarFechaAsignacion(valor) {
+  const match = String(valor || '').match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+}
+
 function limpiarN2(raw) {
   if (!raw) return null;
   const s = String(raw).trim();
@@ -119,11 +124,20 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       params.push(asesor_id);
     }
 
-    if (fecha) { sql += ` AND l.fecha = ?`; params.push(fecha); }
+    // Sin visor de asesor la fecha representa la base original. Para la base
+    // individual representa el dia en que el asesor recibio el numero. Esta
+    // preseleccion reduce la respuesta y el filtro exacto se realiza mas abajo.
+    if (fecha && !visorAsesorId) {
+      sql += ` AND l.fecha = ?`;
+      params.push(fecha);
+    } else if (fecha && visorAsesorId) {
+      sql += ` AND (l.fecha = ? OR l.historial LIKE ?)`;
+      params.push(fecha, `%"fecha":"${fecha}%`);
+    }
     sql += ` ORDER BY l.created_at DESC`;
 
     const [data] = await db.query(sql, params);
-    res.json({ ok: true, data: data.map(l => {
+    const salida = data.map(l => {
       const historial = (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })();
       let obsAsesor = l.obs_asesor || '';
       const documentoEnObs = obsAsesor.match(/\b(DNI|CE|RUC)\s*:\s*\d+/i)?.[0] || '';
@@ -143,7 +157,15 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         obs_asesor: obsAsesor,
         historial,
       };
-    })});
+    });
+    const dataFiltrada = fecha && visorAsesorId
+      ? salida.filter(l => {
+          const asignaciones = l.historial.filter(h => h?.fecha && h?.asesor && h.tipo !== 'TIPIF_VEND');
+          const ultimaAsignacion = asignaciones[asignaciones.length - 1];
+          return normalizarFechaAsignacion(ultimaAsignacion?.fecha || l.fecha) === fecha;
+        })
+      : salida;
+    res.json({ ok: true, data: dataFiltrada });
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener leads' });
