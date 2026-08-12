@@ -418,15 +418,15 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         : '[]';
 
       const tipifBack = normalizarTipifBack(l.tipif_back);
-      const esDerivado = tipifBack === 'DERIVADO' && Boolean(asesorId);
-      const derivadoPorNombre = esDerivado ? await nombreUsuario(req.user.id) : '';
+      const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
+      const derivadoPorNombre = registraAutor ? await nombreUsuario(req.user.id) : '';
       const [result] = await db.query(`
         INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         l.campana||'', l.distrito||'', l.n1, l.n2||null,
         l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
-        esDerivado ? req.user.id : null, derivadoPorNombre,
+        registraAutor ? req.user.id : null, derivadoPorNombre,
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial
       ]);
       ids.push(result.insertId);
@@ -630,7 +630,7 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     let derivadoPorId     = lead.derivado_por_id;
     let derivadoPorNombre = lead.derivado_por_nombre;
     if (tipif_back !== undefined) {
-      if (tipifBackReal === 'DERIVADO') {
+      if (tipifBackReal === 'DERIVADO' || tipifBackReal === 'LLAMANDO') {
         derivadoPorId     = req.user.id;
         derivadoPorNombre = await nombreUsuario(req.user.id);
       } else {
@@ -652,7 +652,7 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       if (histArr.length > 0) {
         const lastIdx = histArr.length - 1;
         let lastEntry = { ...histArr[lastIdx] };
-        if (tipifBackReal === 'DERIVADO') {
+        if (tipifBackReal === 'DERIVADO' || tipifBackReal === 'LLAMANDO') {
           lastEntry = { ...lastEntry, derivadoPor: derivadoPorNombre };
         }
         if (asesorCambia) {
