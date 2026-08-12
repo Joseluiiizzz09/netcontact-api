@@ -22,9 +22,13 @@ app.use(cors({
 }));
 
 app.use('/api/login', rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: { ok: false, mensaje: 'Demasiados intentos. Espera 15 minutos.' },
+  windowMs: 5 * 60 * 1000,
+  max: 5,
+  // La empresa comparte una misma IP publica. El bloqueo debe pertenecer a la
+  // cuenta que acumula fallos, no a toda la oficina.
+  keyGenerator: req => `usuario:${String(req.body?.usuario || '').trim().toLowerCase()}`,
+  skipSuccessfulRequests: true,
+  message: { ok: false, mensaje: 'Usuario bloqueado temporalmente por varios intentos fallidos. Intenta nuevamente en 5 minutos.' },
   standardHeaders: true,
   legacyHeaders: false,
 }));
