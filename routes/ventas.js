@@ -628,7 +628,7 @@ router.get('/:id/historial-asignaciones', auth(['jefatura']), async (req, res) =
 // ===== POST /api/ventas/:id/audio =====
 router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req, res) => {
   try {
-    const [rows] = await db.query(`SELECT id, asesor_id, estado FROM ventas WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id, estado, audio_path FROM ventas WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
     if (!req.file)    return res.status(400).json({ ok: false, mensaje: 'No se recibio archivo' });
 
@@ -658,6 +658,13 @@ router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req
 
     const rutaRelativa = 'uploads/audios/' + req.file.filename;
     await db.query(`UPDATE ventas SET audio_path = ? WHERE id = ?`, [rutaRelativa, req.params.id]);
+    const audioAnterior = String(rows[0].audio_path || '').trim();
+    if (audioAnterior) {
+      const rutaAnterior = path.join(audioDir, path.basename(audioAnterior));
+      if (fs.existsSync(rutaAnterior)) {
+        try { fs.unlinkSync(rutaAnterior); } catch (e) { console.warn('No se pudo borrar el audio reemplazado:', e.message); }
+      }
+    }
     const actor = await obtenerActor(db, req.user.id);
     await registrarHistorial(db, req.params.id, actor, {
       tipo: 'ARCHIVO',
@@ -671,6 +678,59 @@ router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req
     if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al guardar audio' });
+  }
+});
+
+// ===== DELETE /api/ventas/:id/audio =====
+// Elimina solo el archivo de audio y reinicia su revisión para permitir reemplazarlo.
+router.delete('/:id/audio', auth(ROLES_VENTAS), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT id, asesor_id, audio_path FROM ventas WHERE id = ?`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
+
+    const areaSolicitada = String(req.query.area || '').trim().toLowerCase();
+    const permisosUsuario = Array.isArray(req.user.permisos) ? req.user.permisos : [];
+    if (areaSolicitada && areaSolicitada !== req.user.cargo && !permisosUsuario.includes(areaSolicitada)) {
+      return res.status(403).json({ ok: false, mensaje: 'Sin permiso para operar en esta área' });
+    }
+    const cargoEfectivo = areaSolicitada || req.user.cargo;
+    if (!['grabaciones','jefatura'].includes(cargoEfectivo)) {
+      return res.status(403).json({ ok: false, mensaje: 'Solo Grabaciones puede eliminar audios' });
+    }
+
+    const audioAnterior = String(rows[0].audio_path || '').trim();
+    if (!audioAnterior) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene audio para eliminar' });
+
+    await db.query(
+      `UPDATE ventas
+          SET audio_path = NULL,
+              estado_grab = 'pendiente',
+              estado_supgrab = 'sin_revisar'
+        WHERE id = ?`,
+      [req.params.id]
+    );
+
+    const rutaAudio = path.join(audioDir, path.basename(audioAnterior));
+    if (fs.existsSync(rutaAudio)) {
+      try { fs.unlinkSync(rutaAudio); } catch (e) { console.warn('No se pudo borrar el archivo de audio:', e.message); }
+    }
+
+    const actor = await obtenerActor(db, req.user.id);
+    await registrarHistorial(db, req.params.id, actor, {
+      tipo: 'ARCHIVO',
+      campo: 'audio_path',
+      valorAnterior: path.basename(audioAnterior),
+      valorNuevo: null,
+      descripcion: 'Se eliminó la grabación para permitir subir un nuevo archivo MP3.',
+    });
+
+    res.json({ ok: true, mensaje: 'Audio eliminado' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al eliminar audio' });
   }
 });
 
