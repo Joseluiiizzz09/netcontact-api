@@ -264,6 +264,60 @@ router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (
   }
 });
 
+// GET /api/leads/marketing-resumen
+// Resumen agregado y exclusivo de Jefatura para trasladar resultados a Marketing.
+router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
+  try {
+    const desde = String(req.query.desde || '').trim();
+    const hasta = String(req.query.hasta || '').trim();
+    const campana = String(req.query.campana || '').trim();
+    const tipificacion = String(req.query.tipificacion || '').trim();
+    const errores = validar([
+      errorFecha(desde || undefined, 'desde'),
+      errorFecha(hasta || undefined, 'hasta'),
+      errorTexto(campana, 'campana', { max:100 }),
+      errorTexto(tipificacion, 'tipificacion', { max:100 }),
+    ]);
+    if (errores) return res.status(400).json({ ok:false, mensaje:errores[0] });
+    if (desde && hasta && desde > hasta)
+      return res.status(400).json({ ok:false, mensaje:'La fecha Desde no puede ser posterior a Hasta' });
+
+    const tipifSql = `COALESCE(NULLIF(TRIM(l.tipif_vend),''), NULLIF(TRIM(l.tipif_back_2),''), NULLIF(TRIM(l.tipif_back),''), 'SIN TIPIFICAR')`;
+    const condiciones = [];
+    const params = [];
+    if (desde) { condiciones.push('DATE(l.created_at) >= ?'); params.push(desde); }
+    if (hasta) { condiciones.push('DATE(l.created_at) <= ?'); params.push(hasta); }
+    if (campana) { condiciones.push("COALESCE(NULLIF(TRIM(l.campana),''), 'SIN CAMPAÑA') = ?"); params.push(campana); }
+    if (tipificacion) { condiciones.push(`${tipifSql} = ?`); params.push(tipificacion); }
+    const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
+
+    const [filas] = await db.query(`
+      SELECT COALESCE(NULLIF(TRIM(l.campana),''), 'SIN CAMPAÑA') AS campana,
+             ${tipifSql} AS tipificacion,
+             COUNT(*) AS cantidad,
+             MIN(l.created_at) AS primera_alta,
+             MAX(l.created_at) AS ultima_alta
+      FROM leads l
+      ${where}
+      GROUP BY COALESCE(NULLIF(TRIM(l.campana),''), 'SIN CAMPAÑA'), ${tipifSql}
+      ORDER BY cantidad DESC, campana ASC, tipificacion ASC
+    `, params);
+    const [campanas] = await db.query(`SELECT DISTINCT COALESCE(NULLIF(TRIM(campana),''), 'SIN CAMPAÑA') campana FROM leads ORDER BY campana`);
+    const [tipificaciones] = await db.query(`SELECT DISTINCT ${tipifSql} tipificacion FROM leads l ORDER BY tipificacion`);
+    res.json({
+      ok:true,
+      data:filas.map(f => ({ ...f, cantidad:Number(f.cantidad || 0) })),
+      filtros:{
+        campanas:campanas.map(f => f.campana),
+        tipificaciones:tipificaciones.map(f => f.tipificacion),
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, mensaje:'Error al generar el dashboard de Marketing' });
+  }
+});
+
 // POST /api/leads/import-legacy
 // Importacion masiva con historial completo (ASESOR 1-6), tipif_vend, idempotente y transaccional.
 router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
