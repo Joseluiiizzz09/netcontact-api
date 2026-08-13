@@ -9,7 +9,7 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
-const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['NO TOCAR', 'FRAUDE', 'INSTALADO']);
+const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'SIN COBERTURA', 'NO TOCAR', 'FRAUDE', 'INSTALADO']);
 
 function tipificacionProhibida(valor) {
   return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
@@ -76,7 +76,12 @@ async function nombreUsuario(id) {
 // GET /api/leads
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
-    const { fecha, asesor_id } = req.query;
+    const { fecha, asesor_id, area } = req.query;
+    const permisosUsuario = Array.isArray(req.user.permisos) ? req.user.permisos : [];
+    if (area && area !== req.user.cargo && !permisosUsuario.includes(area)) {
+      return res.status(403).json({ ok: false, mensaje: 'Sin permiso para consultar esta área' });
+    }
+    const cargoEfectivo = area || req.user.cargo;
 
     const errGet = validar([errorFecha(fecha, 'fecha')]);
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
@@ -90,7 +95,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     let visorAsesorId = null;
     let visorAsesorNombre = '';
 
-    if (req.user.cargo === 'asesor') {
+    if (cargoEfectivo === 'asesor') {
       // Base del asesor: leads asignados AHORA a él + los que trabajó antes
       // (su nombre aparece en el historial). Así un número no desaparece de su
       // base al ser rotado a otro asesor; conserva su registro de lo trabajado.
@@ -100,7 +105,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       visorAsesorNombre = nom;
       // El nombre debe figurar como ASESOR titular de alguna asignación ("asesor":"nom"),
       // no como asesorAnterior/rotadoPor. Así, al quitar su asignación desaparece de su base.
-      sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"asesor":"', ?, '"%'))`;
+      sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%\"asesor\":\"', ?, '\"%'))`;
       params.push(req.user.id, nom);
       // Si el número ya produjo una venta, queda visible solamente para el
       // asesor que la registró. Los participantes anteriores dejan de verlo
@@ -561,6 +566,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       rotadoPor:     rotadorNombre,
       tipifBackAntes: lead.tipif_back || '',
       tipifVendAntes: lead.tipif_vend || '',
+      obsAsesorAntes: lead.obs_asesor || '',
       hora,
       fecha,
       motivo: String(motivo || '').trim() || 'Rotacion manual',
@@ -661,6 +667,7 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
           // Preserva la tipificación que dejó el asesor anterior, para que la base
           // principal la siga mostrando hasta que el nuevo asesor tipifique.
           if (lastEntry.tipifVendAntes == null) lastEntry.tipifVendAntes = lead.tipif_vend || '';
+          if (lastEntry.obsAsesorAntes == null) lastEntry.obsAsesorAntes = lead.obs_asesor || '';
         }
         histArr[lastIdx] = lastEntry;
       }
@@ -672,8 +679,8 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     // Al cambiar de asesor se limpia la tipif_vend del NUEVO asesor (la ve vacía y
     // coloca la suya). La base principal sigue mostrando la del asesor anterior
     // derivándola del historial (tipifVendAntes) hasta que el nuevo tipifique.
-    const sqlExtra = asesorCambia ? ', tipif_vend=?, tipif_hora=?' : '';
-    const paramsExtra = asesorCambia ? ['', ''] : [];
+    const sqlExtra = asesorCambia ? ', tipif_vend=?, tipif_hora=?, obs_asesor=?' : '';
+    const paramsExtra = asesorCambia ? ['', '', ''] : [];
 
     await db.query(`
       UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,

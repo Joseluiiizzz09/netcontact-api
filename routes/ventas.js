@@ -19,6 +19,7 @@ const ESTADOS_VALIDOS_PATCH = [
   'CARACTER_ESPECIAL','FRAUDE','ZONA_RESTRINGIDA',
   'ANULADA','OBSERVADA','REPROGRAMADA','NO CONTACTO','RECHAZADA','RECHAZADO',
   'NO_DESEA','NO_CONTESTA','SERVICIO_ACTIVO','BUZON_VOZ','CORTA_LLAMADA',
+  'CORREGIR',
 ];
 const ESTADOS_PROGRAMACION = [
   'APROBADO','PROGRAMADO','BLOQUEADO','SIN_AGENDA','CARACTER_ESPECIAL',
@@ -205,6 +206,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       errorTexto(v.nombre,  'nombre',  { requerido: true, max: 150 }),
       errorTexto(v.dni,     'dni',     { requerido: true }),
       errorDni(v.dni, v.tipoDoc || 'DNI'),
+      errorTexto(v.email,   'email',   { requerido: true, max: 150 }),
       errorEmail(v.email),
       errorEnum(v.tipoDoc, 'tipoDoc', TIPO_DOC_OK),
       errorTexto(v.telefono1, 'telefono1', { requerido: true, max: 20 }),
@@ -377,7 +379,25 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
 // ===== GET /api/ventas =====
 router.get('/', auth(ROLES_VENTAS), async (req, res) => {
   try {
-    const { dni, estado, desde, hasta, asesor_id, programacion } = req.query;
+    const { dni, estado, desde, hasta, asesor_id, programacion, alcance, area } = req.query;
+    const permisosUsuario = Array.isArray(req.user.permisos) ? req.user.permisos : [];
+    if (area && area !== req.user.cargo && !permisosUsuario.includes(area)) {
+      return res.status(403).json({ ok: false, mensaje: 'Sin permiso para consultar esta área' });
+    }
+    const cargoEfectivo = area || req.user.cargo;
+
+    // Una venta PROGRAMADA espera como máximo dos horas la decisión de
+    // Sup. Grabaciones. Al vencer vuelve a la cola de Grabaciones.
+    await db.query(`
+      UPDATE ventas
+         SET estado = 'VALIDADO',
+             estado_supgrab = 'no_conforme',
+             estado_grab = 'pendiente',
+             programacion_expira_at = NULL
+       WHERE LOWER(TRIM(COALESCE(estado_supgrab, ''))) = 'programado'
+         AND programacion_expira_at IS NOT NULL
+         AND programacion_expira_at <= NOW()
+    `);
 
     const errores = validar([
       errorFecha(desde, 'desde'),
@@ -385,20 +405,6 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
       asesor_id ? errorId(asesor_id, 'asesor_id') : null,
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
-
-    // Vencimiento operativo: si Super de Grabaciones no responde en dos
-    // horas, vuelve automáticamente a la cola de los asesores de Grabaciones.
-    await db.query(`
-      UPDATE ventas
-         SET estado = 'VALIDADO',
-             estado_grab = 'pendiente',
-             estado_supgrab = 'no_conforme',
-             programacion_expira_at = NULL
-       WHERE UPPER(estado) = 'PROGRAMADO'
-         AND LOWER(COALESCE(estado_supgrab, '')) = 'programado'
-         AND programacion_expira_at IS NOT NULL
-         AND programacion_expira_at <= NOW()
-    `);
 
     // fecha_programado: momento real (venta_historial) en que Programación
     // puso estado=PROGRAMADO — no la hora del servidor. Agregado en una sola
@@ -431,13 +437,34 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                WHERE 1=1`;
     const params = [];
 
-    if (req.user.cargo === 'asesor') {
+    if (cargoEfectivo === 'asesor') {
       sql += ` AND v.asesor_id = ?`; params.push(req.user.id);
     } else if (asesor_id) {
       sql += ` AND v.asesor_id = ?`; params.push(asesor_id);
     }
 
-    if (req.user.cargo === 'programacion' || programacion === '1') {
+    if (alcance === 'sala') {
+      const actor = await obtenerActor(db, req.user.id);
+      const permisos = Array.isArray(req.user.permisos) ? req.user.permisos : [];
+      if (!actor || (req.user.cargo !== 'supervisor' && !permisos.includes('supervisor'))) {
+        return res.status(403).json({ ok: false, mensaje: 'Sin permiso para consultar ventas por sala' });
+      }
+      if (!salaNormalizada(actor.sala)) {
+        return res.json({ ok: true, data: [] });
+      }
+      sql += ` AND UPPER(TRIM(COALESCE(u.sala, ''))) = ?`;
+      params.push(salaNormalizada(actor.sala));
+    }
+
+    if (cargoEfectivo === 'grabaciones') {
+      sql += ` AND UPPER(v.estado) = 'VALIDADO'`;
+    }
+
+    if (cargoEfectivo === 'seguimiento') {
+      sql += ` AND LOWER(TRIM(COALESCE(v.estado_supgrab, ''))) = 'conforme'`;
+    }
+
+    if (cargoEfectivo === 'programacion' || programacion === '1') {
       // Las ventas que siguen en VALIDADO entran a Programación únicamente
       // después de la aprobación explícita de Super de Grabaciones.
       // Sin revisar, observadas o rechazadas no deben ser visibles aquí.
@@ -574,9 +601,21 @@ router.get('/:id/historial-asignaciones', auth(['jefatura']), async (req, res) =
 // ===== POST /api/ventas/:id/audio =====
 router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req, res) => {
   try {
-    const [rows] = await db.query(`SELECT id, asesor_id FROM ventas WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id, estado FROM ventas WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
     if (!req.file)    return res.status(400).json({ ok: false, mensaje: 'No se recibio archivo' });
+
+    const areaSolicitada = String(req.query.area || '').trim().toLowerCase();
+    const permisosUsuario = Array.isArray(req.user.permisos) ? req.user.permisos : [];
+    if (areaSolicitada && areaSolicitada !== req.user.cargo && !permisosUsuario.includes(areaSolicitada)) {
+      return res.status(403).json({ ok: false, mensaje: 'Sin permiso para operar en esta área' });
+    }
+    const cargoEfectivo = areaSolicitada || req.user.cargo;
+
+    if (cargoEfectivo === 'grabaciones' && String(rows[0].estado || '').toUpperCase() !== 'VALIDADO') {
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({ ok: false, mensaje: 'Solo puedes grabar ventas con estado VALIDADO' });
+    }
 
     // Asesor solo puede subir audio de sus propias ventas
     if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
@@ -611,7 +650,7 @@ router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req
 // ===== PATCH /api/ventas/:id/tipificar-validacion =====
 // Endpoint dedicado para Validación: append al historial server-side,
 // control de concurrencia (estadoAnteriorEsperado), usuario desde req.user.
-const TIPS_VALIDACION = ['corta_llamada','fraude','no_desea','no_contesta','buzon_voz','servicio_activo','validado'];
+const TIPS_VALIDACION = ['corta_llamada','fraude','no_desea','no_contesta','buzon_voz','servicio_activo','corregir','venta','validado'];
 const TIP_LABELS_VAL  = {
   corta_llamada:   'CORTA LLAMADA',
   fraude:          'FRAUDE',
@@ -619,6 +658,8 @@ const TIP_LABELS_VAL  = {
   no_contesta:     'NO CONTESTA',
   buzon_voz:       'BUZÓN DE VOZ',
   servicio_activo: 'SERVICIO ACTIVO',
+  corregir:        'CORREGIR',
+  venta:           'VENTA',
   validado:        'VALIDADO',
 };
 const TIP_TO_ESTADO_VAL = {
@@ -629,6 +670,8 @@ const TIP_TO_ESTADO_VAL = {
   no_contesta:     'NO_CONTESTA',
   buzon_voz:       'BUZON_VOZ',
   servicio_activo: 'SERVICIO_ACTIVO',
+  corregir:        'CORREGIR',
+  venta:           'VENTA',
 };
 
 function nowPeruLabel() {
@@ -771,6 +814,21 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     `, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
 
+    const areaSolicitada = String(req.query.area || '').trim().toLowerCase();
+    const permisosUsuario = Array.isArray(req.user.permisos) ? req.user.permisos : [];
+    if (areaSolicitada && areaSolicitada !== req.user.cargo && !permisosUsuario.includes(areaSolicitada)) {
+      return res.status(403).json({ ok: false, mensaje: 'Sin permiso para operar en esta área' });
+    }
+    const cargoEfectivo = areaSolicitada || req.user.cargo;
+
+    if (cargoEfectivo === 'grabaciones' && String(rows[0].estado || '').toUpperCase() !== 'VALIDADO') {
+      return res.status(403).json({ ok: false, mensaje: 'Solo puedes gestionar ventas con estado VALIDADO' });
+    }
+
+    if (cargoEfectivo === 'seguimiento' && String(rows[0].estado_supgrab || '').trim().toLowerCase() !== 'conforme') {
+      return res.status(403).json({ ok: false, mensaje: 'Solo puedes gestionar ventas marcadas como CONFORME' });
+    }
+
     // Asesor solo puede modificar sus propias ventas
     if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
       return res.status(403).json({ ok: false, mensaje: 'No puedes modificar ventas de otros asesores' });
@@ -836,6 +894,8 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     agregarCambio('motivo_seguimiento', motivo_seguimiento);
 
     if (estado !== undefined && String(estado).toUpperCase() === 'PROGRAMADO') {
+      if (estado_supgrab === undefined) campos.push("estado_supgrab = 'programado'");
+      if (estado_grab === undefined) campos.push("estado_grab = 'grabado'");
       campos.push('programacion_expira_at = DATE_ADD(NOW(), INTERVAL 2 HOUR)');
     } else if (estado !== undefined && String(estado).toUpperCase() === 'PENDIENTE') {
       campos.push('programacion_expira_at = NULL');
