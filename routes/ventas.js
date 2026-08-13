@@ -453,7 +453,8 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                  INNER JOIN (
                    SELECT venta_id, MAX(id) AS max_id
                    FROM venta_historial
-                   WHERE campo = 'estado' AND modulo = 'Programación'
+                   WHERE campo = 'estado'
+                     AND (modulo = 'Programación' OR UPPER(valor_nuevo) = 'PROGRAMADO')
                    GROUP BY venta_id
                  ) h2 ON h1.id = h2.max_id
                ) ph_prog ON ph_prog.venta_id = v.id
@@ -1031,8 +1032,9 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     vals.push(req.params.id);
     await conn.query(`UPDATE ventas SET ${campos.join(', ')} WHERE id = ?`, vals);
     const actor = await obtenerActor(conn, req.user.id);
+    const actorDelArea = actor ? { ...actor, cargo: cargoEfectivo } : actor;
     for (const cambio of cambios) {
-      await registrarHistorial(conn, req.params.id, actor, cambio);
+      await registrarHistorial(conn, req.params.id, actorDelArea, cambio);
     }
     await conn.commit();
     res.json({ ok: true, mensaje: 'Venta actualizada' });
