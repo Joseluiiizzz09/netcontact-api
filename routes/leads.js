@@ -10,7 +10,6 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
 const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'SIN COBERTURA', 'NO TOCAR', 'FRAUDE', 'INSTALADO', 'SH NO ROTAR', 'SH NO TOCAR']);
-const TIPIF_ROTACION_PERMITIDA = new Set(['', 'NUEVO', 'NO CONTESTA', 'BUZON DE VOZ']);
 
 function tipificacionProhibida(valor) {
   return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
@@ -597,12 +596,6 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: 'Este número ya fue asignado anteriormente a ese asesor' });
     }
-    const tipifActual = String(lead.tipif_vend || '').trim().toUpperCase();
-    if (!TIPIF_ROTACION_PERMITIDA.has(tipifActual)) {
-      await conn.rollback();
-      return res.status(409).json({ ok: false, mensaje: `La tipificación ${tipifActual || 'actual'} no permite rotación` });
-    }
-
     const fechaUltima = normalizarFechaAsignacion(lead.fecha) || fechaPeruHoy();
     const horaUltima  = String(lead.hora_asig || '').trim();
     const ultimaAsignacion = horaUltima ? new Date(`${fechaUltima}T${horaUltima}:00-05:00`) : null;
