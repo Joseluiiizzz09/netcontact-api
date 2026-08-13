@@ -121,8 +121,11 @@ async function initDB() {
         coordenadas_sin_cobertura VARCHAR(255) DEFAULT '',
         obs_back      TEXT,
         tipif_back    VARCHAR(100) DEFAULT '',
+        tipif_back_2  VARCHAR(100) DEFAULT '',
         derivado_por_id INT NULL,
         derivado_por_nombre VARCHAR(150) DEFAULT '',
+        derivado_por_2_id INT NULL,
+        derivado_por_2_nombre VARCHAR(150) DEFAULT '',
         asesor_id     INT,
         asesor_nombre VARCHAR(150),
         fecha         DATE         NOT NULL,
@@ -189,6 +192,7 @@ async function initDB() {
       ['distrito_sin_cobertura', "VARCHAR(100) DEFAULT ''"],
       ['coordenadas_sin_cobertura', "VARCHAR(255) DEFAULT ''"],
       ['obs_back',      'TEXT'],
+      ['tipif_back_2',  "VARCHAR(100) DEFAULT ''"],
     ];
     for (const [columna, definicion] of columnasLead) {
       await conn.query(`ALTER TABLE leads ADD COLUMN ${columna} ${definicion}`)
@@ -307,6 +311,8 @@ async function initDB() {
     const columnasDerivacionLeads = [
       ['derivado_por_id', 'INT NULL'],
       ['derivado_por_nombre', "VARCHAR(150) DEFAULT ''"],
+      ['derivado_por_2_id', 'INT NULL'],
+      ['derivado_por_2_nombre', "VARCHAR(150) DEFAULT ''"],
     ];
     for (const [columna, definicion] of columnasDerivacionLeads) {
       await conn.query(`ALTER TABLE leads ADD COLUMN ${columna} ${definicion}`)

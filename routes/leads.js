@@ -649,7 +649,8 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     await conn.query(`
       UPDATE leads SET
         asesor_id = ?, asesor_nombre = ?,
-        tipif_back = '', derivado_por_id = NULL, derivado_por_nombre = '',
+        tipif_back = '', tipif_back_2 = '', derivado_por_id = NULL, derivado_por_nombre = '',
+        derivado_por_2_id = NULL, derivado_por_2_nombre = '',
         hora_asig = ?, sin_asignar = 0,
         rotaciones = rotaciones + 1,
         tipif_vend = '', tipif_hora = '', obs_asesor = '',
@@ -671,12 +672,13 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
 // PATCH /api/leads/:id
 router.patch('/:id', auth(ROLES_BO), async (req, res) => {
   try {
-    const { asesor_nombre, tipif_back, hora_asig, historial } = req.body;
+    const { asesor_nombre, tipif_back, tipif_back_2, hora_asig, historial } = req.body;
 
     const errores = validar([
       errorHora(hora_asig, 'hora_asig'),
       errorHistorial(historial),
       errorTexto(tipif_back, 'tipif_back', { max: 200 }),
+      errorTexto(tipif_back_2, 'tipif_back_2', { max: 200 }),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
 
@@ -711,6 +713,7 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
 
     const horaReal = hora_asig || horaPeruAhora();
     const tipifBackReal = tipif_back === undefined ? lead.tipif_back : normalizarTipifBack(tipif_back);
+    const tipifBack2Real = tipif_back_2 === undefined ? (lead.tipif_back_2 || '') : normalizarTipifBack(tipif_back_2);
 
     // derivadoPor lo determina el backend desde req.user — el frontend no puede falsificarlo.
     let derivadoPorId     = lead.derivado_por_id;
@@ -738,8 +741,11 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       if (histArr.length > 0) {
         const lastIdx = histArr.length - 1;
         let lastEntry = { ...histArr[lastIdx] };
-        if (tipifBackReal === 'DERIVADO' || tipifBackReal === 'LLAMANDO') {
+        if (tipif_back !== undefined && (tipifBackReal === 'DERIVADO' || tipifBackReal === 'LLAMANDO')) {
           lastEntry = { ...lastEntry, derivadoPor: derivadoPorNombre };
+        }
+        if (tipif_back_2 !== undefined && (tipifBack2Real === 'DERIVADO' || tipifBack2Real === 'LLAMANDO')) {
+          lastEntry = { ...lastEntry, derivadoPor2: derivadoPor2Nombre };
         }
         if (asesorCambia) {
           if (!lastEntry.asesorAnterior) lastEntry.asesorAnterior = lead.asesor_nombre || '';
@@ -763,15 +769,16 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     const paramsExtra = asesorCambia ? ['', '', ''] : [];
 
     await db.query(`
-      UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, hora_asig=?,
+      UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, tipif_back_2=?, hora_asig=?,
         sin_asignar=?, historial=?, rotaciones=rotaciones+?,
-        derivado_por_id=?, derivado_por_nombre=?${sqlExtra}
+        derivado_por_id=?, derivado_por_nombre=?, derivado_por_2_id=?, derivado_por_2_nombre=?${sqlExtra}
       WHERE id=?
     `, [
-      asesorId, asesorNombreReal, asesorCambia ? '' : tipifBackReal,
+      asesorId, asesorNombreReal, asesorCambia ? '' : tipifBackReal, asesorCambia ? '' : tipifBack2Real,
       horaReal, asesorId?0:1, historialJSON,
       asesorCambia ? 1 : 0,
       asesorCambia ? null : derivadoPorId, asesorCambia ? '' : derivadoPorNombre,
+      asesorCambia ? null : derivadoPor2Id, asesorCambia ? '' : derivadoPor2Nombre,
       ...paramsExtra,
       req.params.id
     ]);
@@ -925,6 +932,18 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
           historial[i] = { ...h, obsAsesorPersonal:String(obs || '') };
           break;
         }
+      }
+    }
+
+    let derivadoPor2Id = lead.derivado_por_2_id;
+    let derivadoPor2Nombre = lead.derivado_por_2_nombre;
+    if (tipif_back_2 !== undefined) {
+      if (tipifBack2Real === 'DERIVADO' || tipifBack2Real === 'LLAMANDO') {
+        derivadoPor2Id = req.user.id;
+        derivadoPor2Nombre = await nombreUsuario(req.user.id);
+      } else {
+        derivadoPor2Id = null;
+        derivadoPor2Nombre = '';
       }
     }
     await db.query(`UPDATE leads SET obs_asesor=?, historial=? WHERE id=?`, [obs||'', JSON.stringify(historial), req.params.id]);
