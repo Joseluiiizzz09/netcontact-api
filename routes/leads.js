@@ -750,13 +750,13 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     `, [
       asesorId, asesorNombreReal, asesorCambia ? '' : tipifBackReal,
       horaReal, asesorId?0:1, historialJSON,
-      req.body.sumarRotacion?1:0,
+      asesorCambia ? 1 : 0,
       asesorCambia ? null : derivadoPorId, asesorCambia ? '' : derivadoPorNombre,
       ...paramsExtra,
       req.params.id
     ]);
 
-    res.json({ ok: true, mensaje: 'Lead actualizado' });
+    res.json({ ok: true, rotaciones:Number(lead.rotaciones || 0) + (asesorCambia ? 1 : 0), mensaje: 'Lead actualizado' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar lead' });
   }
