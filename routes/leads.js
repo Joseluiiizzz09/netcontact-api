@@ -86,10 +86,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const errGet = validar([errorFecha(fecha, 'fecha')]);
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
 
-    let sql = `SELECT l.*, u.nombre as asesor_nombre_db,
-      EXISTS(SELECT 1 FROM ventas vv WHERE TRIM(vv.telefono1) = TRIM(l.n1)) AS venta_confirmada,
-      (SELECT vv.asesor_id FROM ventas vv WHERE TRIM(vv.telefono1) = TRIM(l.n1) ORDER BY vv.id DESC LIMIT 1) AS venta_asesor_id,
-      (SELECT uv.nombre FROM ventas vv LEFT JOIN usuarios uv ON uv.id = vv.asesor_id WHERE TRIM(vv.telefono1) = TRIM(l.n1) ORDER BY vv.id DESC LIMIT 1) AS venta_asesor_nombre
+    let sql = `SELECT l.*, u.nombre as asesor_nombre_db
       FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
     const params = [];
     let visorAsesorId = null;
@@ -142,6 +139,27 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     sql += ` ORDER BY l.created_at DESC`;
 
     const [data] = await db.query(sql, params);
+
+    // Segunda query: datos de ventas para todos los teléfonos en un solo round-trip.
+    // Reemplaza las 3 subqueries correlacionadas que antes se ejecutaban una vez por fila.
+    let ventaMap = new Map(); // TRIM(telefono1) -> { venta_asesor_id, venta_asesor_nombre }
+    if (data.length > 0) {
+      const phones = [...new Set(data.map(l => (l.n1 || '').trim()).filter(Boolean))];
+      if (phones.length > 0) {
+        const placeholders = phones.map(() => '?').join(',');
+        const [ventas] = await db.query(
+          `SELECT v.telefono1, v.asesor_id, u.nombre AS asesor_nombre
+           FROM ventas v LEFT JOIN usuarios u ON u.id = v.asesor_id
+           WHERE TRIM(v.telefono1) IN (${placeholders})
+             AND v.id IN (SELECT MAX(id) FROM ventas GROUP BY TRIM(telefono1))`,
+          phones
+        );
+        for (const vv of ventas) {
+          ventaMap.set((vv.telefono1 || '').trim(), { venta_asesor_id: vv.asesor_id, venta_asesor_nombre: vv.asesor_nombre });
+        }
+      }
+    }
+
     const salida = data.map(l => {
       const historial = (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })();
       let obsAsesor = l.obs_asesor || '';
@@ -155,10 +173,17 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
             : obsAsesor.replace(documentoEnObs, '').replace(/^\s*\|\s*|\s*\|\s*$/g, '').trim();
         }
       }
-      const ventaCerrada = Number(l.venta_confirmada) === 1 && l.venta_asesor_id;
+      const ventaInfo = ventaMap.get((l.n1 || '').trim());
+      const ventaConfirmada = ventaInfo ? 1 : 0;
+      const ventaAsesorId = ventaInfo?.venta_asesor_id ?? null;
+      const ventaAsesorNombre = ventaInfo?.venta_asesor_nombre ?? null;
+      const ventaCerrada = ventaConfirmada === 1 && ventaAsesorId;
       return {
         ...l,
-        ...(ventaCerrada ? { asesor_id:l.venta_asesor_id, asesor_nombre:l.venta_asesor_nombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
+        venta_confirmada: ventaConfirmada,
+        venta_asesor_id: ventaAsesorId,
+        venta_asesor_nombre: ventaAsesorNombre,
+        ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
         historial,
       };
@@ -413,7 +438,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         else asesorId = null;
       } else if (l.asesor_nombre || l.asesor) {
         const nombreBuscar = l.asesor_nombre || l.asesor;
-        const [uRows] = await db.query(`SELECT id, nombre FROM usuarios WHERE nombre = ?`, [nombreBuscar]);
+        const [uRows] = await db.query(`SELECT id, nombre FROM usuarios WHERE LOWER(TRIM(nombre)) = LOWER(TRIM(?)) LIMIT 1`, [nombreBuscar]);
         if (uRows.length) { asesorId = uRows[0].id; asesorNombre = uRows[0].nombre; }
       }
 
@@ -772,6 +797,23 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // para que la base tome la más reciente. No toca la tipif del titular actual.
     const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
     const miNombre = (me[0]?.nombre || '').trim();
+
+    // CASO B: asesor_id nulo/inválido pero soy el asesor actual según la última asignación real del historial.
+    // Ocurre cuando el lead fue creado/importado con un nombre que no resolvió a un id en BD.
+    if (!lead.asesor_id || Number(lead.asesor_id) === 0) {
+      let ultimaAsig = null;
+      for (let i = historial.length - 1; i >= 0; i--) {
+        const h = historial[i];
+        if (h && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND') { ultimaAsig = h; break; }
+      }
+      if (ultimaAsig && (ultimaAsig.asesor || '').trim() === miNombre) {
+        registrarTipifEvent(historial, miNombre, tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
+        await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=?, distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
+          [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+        return res.json({ ok: true, mensaje: 'Tipificación guardada' });
+      }
+    }
+
     let idx = -1;
     for (let i = historial.length - 1; i >= 0; i--) {
       if ((historial[i]?.asesorAnterior || '').trim() === miNombre) { idx = i; break; }
