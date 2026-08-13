@@ -9,7 +9,8 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
-const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'SIN COBERTURA', 'NO TOCAR', 'FRAUDE', 'INSTALADO', 'SH NO ROTAR']);
+const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'SIN COBERTURA', 'NO TOCAR', 'FRAUDE', 'INSTALADO', 'SH NO ROTAR', 'SH NO TOCAR']);
+const TIPIF_ROTACION_PERMITIDA = new Set(['', 'NUEVO', 'NO CONTESTA', 'BUZON DE VOZ']);
 
 function tipificacionProhibida(valor) {
   return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
@@ -581,6 +582,31 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
 
     let historial = [];
     try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
+    const asesorYaUsado = historial.some(h =>
+      [h?.asesor, h?.asesorAnterior].some(nombre =>
+        String(nombre || '').trim().toUpperCase() === String(asesorNuevo.nombre || '').trim().toUpperCase()
+      )
+    );
+    if (asesorYaUsado) {
+      await conn.rollback();
+      return res.status(409).json({ ok: false, mensaje: 'Este número ya fue asignado anteriormente a ese asesor' });
+    }
+    const tipifActual = String(lead.tipif_vend || '').trim().toUpperCase();
+    if (!TIPIF_ROTACION_PERMITIDA.has(tipifActual)) {
+      await conn.rollback();
+      return res.status(409).json({ ok: false, mensaje: `La tipificación ${tipifActual || 'actual'} no permite rotación` });
+    }
+
+    const fechaUltima = normalizarFechaAsignacion(lead.fecha) || fechaPeruHoy();
+    const horaUltima  = String(lead.hora_asig || '').trim();
+    const ultimaAsignacion = horaUltima ? new Date(`${fechaUltima}T${horaUltima}:00-05:00`) : null;
+    if (ultimaAsignacion && !Number.isNaN(ultimaAsignacion.getTime())) {
+      const minutos = Math.floor((Date.now() - ultimaAsignacion.getTime()) / 60000);
+      if (minutos < 120) {
+        await conn.rollback();
+        return res.status(409).json({ ok: false, mensaje: `Deben pasar 2 horas desde la última asignación. Faltan ${120 - Math.max(0, minutos)} minutos` });
+      }
+    }
     const fecha = fechaPeruHoy();
     const hora  = horaPeruAhora();
     historial.push({
