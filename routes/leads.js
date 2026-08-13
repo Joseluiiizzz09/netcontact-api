@@ -9,7 +9,7 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
-const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'SIN COBERTURA', 'NO TOCAR', 'FRAUDE', 'INSTALADO']);
+const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'SIN COBERTURA', 'NO TOCAR', 'FRAUDE', 'INSTALADO', 'SH NO ROTAR']);
 
 function tipificacionProhibida(valor) {
   return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
@@ -63,7 +63,6 @@ function normalizarTipifBack(valor) {
 function normalizarTipifVendLegacy(valor) {
   const v = String(valor || '').trim();
   const u = v.toUpperCase();
-  if (u === 'SH NO ROTAR') return 'NO TOCAR';
   if (u === 'SH INSTALADO') return 'INSTALADO';
   return v;
 }

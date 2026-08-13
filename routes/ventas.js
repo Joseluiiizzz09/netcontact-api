@@ -19,7 +19,7 @@ const ESTADOS_VALIDOS_PATCH = [
   'CARACTER_ESPECIAL','FRAUDE','ZONA_RESTRINGIDA',
   'ANULADA','OBSERVADA','REPROGRAMADA','NO CONTACTO','RECHAZADA','RECHAZADO',
   'NO_DESEA','NO_CONTESTA','SERVICIO_ACTIVO','BUZON_VOZ','CORTA_LLAMADA',
-  'CORREGIR',
+  'CORREGIR','MALA_OFERTA',
 ];
 const ESTADOS_PROGRAMACION = [
   'APROBADO','PROGRAMADO','BLOQUEADO','SIN_AGENDA','CARACTER_ESPECIAL',
@@ -673,7 +673,7 @@ router.post('/:id/audio', auth(ROLES_VENTAS), upload.single('audio'), async (req
 // ===== PATCH /api/ventas/:id/tipificar-validacion =====
 // Endpoint dedicado para Validación: append al historial server-side,
 // control de concurrencia (estadoAnteriorEsperado), usuario desde req.user.
-const TIPS_VALIDACION = ['corta_llamada','fraude','no_desea','no_contesta','buzon_voz','servicio_activo','corregir','venta','validado'];
+const TIPS_VALIDACION = ['corta_llamada','fraude','no_desea','no_contesta','buzon_voz','servicio_activo','corregir','mala_oferta','venta','validado'];
 const TIP_LABELS_VAL  = {
   corta_llamada:   'CORTA LLAMADA',
   fraude:          'FRAUDE',
@@ -682,6 +682,7 @@ const TIP_LABELS_VAL  = {
   buzon_voz:       'BUZÓN DE VOZ',
   servicio_activo: 'SERVICIO ACTIVO',
   corregir:        'CORREGIR',
+  mala_oferta:     'MALA OFERTA',
   venta:           'VENTA',
   validado:        'VALIDADO',
 };
@@ -694,6 +695,7 @@ const TIP_TO_ESTADO_VAL = {
   buzon_voz:       'BUZON_VOZ',
   servicio_activo: 'SERVICIO_ACTIVO',
   corregir:        'CORREGIR',
+  mala_oferta:     'MALA_OFERTA',
   venta:           'VENTA',
 };
 
