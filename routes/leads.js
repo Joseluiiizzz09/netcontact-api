@@ -190,7 +190,14 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     });
     const dataFiltrada = fecha && visorAsesorId
       ? salida.filter(l => {
-          const asignaciones = l.historial.filter(h => h?.fecha && h?.asesor && h.tipo !== 'TIPIF_VEND');
+          // La asignacion vigente por ID prevalece aunque un historial legacy
+          // tenga una fecha vieja o incompleta. Para registros rotados se toma
+          // solamente la ultima asignacion correspondiente al asesor consultado.
+          if (Number(l.asesor_id) === Number(visorAsesorId)) return true;
+          const asignaciones = l.historial.filter(h =>
+            h?.fecha && h?.asesor && h.tipo !== 'TIPIF_VEND' &&
+            (!visorAsesorNombre || String(h.asesor).trim() === visorAsesorNombre.trim())
+          );
           const ultimaAsignacion = asignaciones[asignaciones.length - 1];
           return normalizarFechaAsignacion(ultimaAsignacion?.fecha || l.fecha) === fecha;
         })
