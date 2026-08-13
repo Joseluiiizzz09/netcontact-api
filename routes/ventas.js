@@ -8,7 +8,7 @@ const fs       = require('fs');
 const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositivo, errorId, errorEnum, TIPO_DOC_OK } = require('../middleware/validar');
 
 const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
-const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz'];
+const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz','esperando_tercero','corregir_sec'];
 const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado','programado','conforme','no_conforme'];
 const TRAMOS_SEGUIMIENTO_OK = ['AM 1','AM 2','PM 1','PM 2','PM 3'];
 const ESTADOS_VALIDOS_POST  = ['VENTA'];
@@ -165,6 +165,29 @@ const CAMPOS_HISTORIAL = {
   tramo_seguimiento: 'Tramo de Seguimiento',
   motivo_seguimiento: 'Motivo de Seguimiento',
   audio_path: 'Archivo de audio',
+  nombre: 'Nombre del cliente',
+  tipo_doc: 'Tipo de documento',
+  dni: 'Número de documento',
+  email: 'Correo electrónico',
+  telefono1: 'Teléfono principal',
+  telefono2: 'Teléfono secundario',
+  departamento: 'Departamento',
+  provincia: 'Provincia',
+  distrito: 'Distrito',
+  direccion: 'Dirección',
+  coordenadas: 'Coordenadas',
+  paquete: 'Paquete',
+  cuota_inst: 'Cuota de instalación',
+  claro_hogar: 'Claro Hogar',
+  tecnologia: 'Tecnología',
+  full_claro: 'Full Claro',
+  cant_decos: 'Cantidad de decos',
+  cant_mesh: 'Cantidad de mesh',
+  plano: 'Plano',
+  fecha_nac: 'Fecha de nacimiento',
+  lugar_nac: 'Lugar de nacimiento',
+  padre: 'Nombre del padre',
+  madre: 'Nombre de la madre',
 };
 
 function valorHistorial(valor) {
@@ -879,7 +902,19 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
         cambios.push({ campo, valorAnterior: rows[0][campo], valorNuevo: normalizado });
       }
     };
-    agregarCambio('estado', estado);
+    // CAMBIO 5: al marcar conforme, no pisar estado si la venta ya avanzó más allá de VALIDADO
+    let _estadoAplicar = estado;
+    if (
+      estado !== undefined &&
+      String(estado).toUpperCase() === 'EN_EJECUCION' &&
+      estado_supgrab !== undefined &&
+      String(estado_supgrab).toLowerCase() === 'conforme'
+    ) {
+      const estadoActual = String(rows[0].estado || '').toUpperCase();
+      const PRE_EJECUCION = new Set(['VENTA','GRABADO','APROBADO','VALIDADO']);
+      if (!PRE_EJECUCION.has(estadoActual)) _estadoAplicar = undefined;
+    }
+    agregarCambio('estado', _estadoAplicar);
     agregarCambio('obs_backoffice', obs_backoffice);
     agregarCambio('observacion', observacion);
     agregarCambio('obs_programacion', obs_programacion);
@@ -937,6 +972,115 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     await conn.rollback().catch(() => {});
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar venta' });
+  } finally {
+    conn.release();
+  }
+});
+
+// ===== PATCH /api/ventas/:id/datos — editar datos básicos del cliente =====
+// Solo modifica campos del cliente (nombre, DNI, teléfono, dirección, paquete, etc.)
+// No toca: estado, estado_grab, estado_supgrab, observaciones operativas, audio.
+router.patch('/:id/datos', auth(['supervisor','jefatura','seguimiento','usuarios']), async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    const ventaId = Number(req.params.id);
+    if (!Number.isInteger(ventaId) || ventaId <= 0)
+      return res.status(400).json({ ok: false, mensaje: 'ID de venta inválido.' });
+
+    const {
+      nombre, tipoDoc, dni, email,
+      telefono1, telefono2,
+      departamento, provincia, distrito, direccion, coordenadas,
+      paquete, cuotaInstalacion, hogar, tec, full, plano,
+      fechaNac, lugarNac, padre, madre,
+      cantDecos, cantMesh,
+      observacion,
+    } = req.body;
+
+    const errores = validar([
+      errorTexto(nombre,         'nombre',         { max: 150 }),
+      errorTexto(dni,            'dni',            { max: 20  }),
+      errorTexto(email,          'email',          { max: 150 }),
+      errorTexto(telefono1,      'telefono1',      { max: 20  }),
+      errorTexto(telefono2,      'telefono2',      { max: 20  }),
+      errorTexto(departamento,   'departamento',   { max: 100 }),
+      errorTexto(provincia,      'provincia',      { max: 100 }),
+      errorTexto(distrito,       'distrito',       { max: 100 }),
+      errorTexto(direccion,      'direccion',      { max: 1000}),
+      errorTexto(coordenadas,    'coordenadas',    { max: 255 }),
+      errorTexto(paquete,        'paquete',        { max: 100 }),
+      errorTexto(cuotaInstalacion,'cuotaInstalacion',{ max: 100}),
+      errorTexto(hogar,          'hogar',          { max: 100 }),
+      errorTexto(tec,            'tec',            { max: 50  }),
+      errorTexto(full,           'full',           { max: 50  }),
+      errorTexto(plano,          'plano',          { max: 255 }),
+      errorTexto(fechaNac,       'fechaNac',       { max: 10  }),
+      errorTexto(lugarNac,       'lugarNac',       { max: 150 }),
+      errorTexto(padre,          'padre',          { max: 150 }),
+      errorTexto(madre,          'madre',          { max: 150 }),
+      errorTexto(observacion,    'observacion',    { max: 1000}),
+      tipoDoc !== undefined ? errorEnum(tipoDoc, 'tipoDoc', TIPO_DOC_OK) : null,
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+
+    const venta = await obtenerVentaConAsesor(conn, ventaId);
+    if (!venta) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada.' });
+
+    if (req.user.cargo === 'supervisor') {
+      const actor = await obtenerActor(conn, req.user.id);
+      if (!supervisorPuedeGestionar(actor, venta))
+        return res.status(403).json({ ok: false, mensaje: 'Solo puedes editar ventas de tu sala.' });
+    }
+
+    const campos = [], vals = [], cambios = [];
+    const agregar = (col, valorNuevo) => {
+      if (valorNuevo === undefined) return;
+      campos.push(`${col} = ?`);
+      vals.push(valorNuevo === '' ? null : valorNuevo);
+      if (valorHistorial(venta[col]) !== valorHistorial(valorNuevo === '' ? null : valorNuevo)) {
+        cambios.push({ campo: col, valorAnterior: venta[col], valorNuevo: valorNuevo === '' ? null : valorNuevo });
+      }
+    };
+    agregar('nombre',      nombre);
+    agregar('tipo_doc',    tipoDoc);
+    agregar('dni',         dni);
+    agregar('email',       email);
+    agregar('telefono1',   telefono1);
+    agregar('telefono2',   telefono2);
+    agregar('departamento',departamento);
+    agregar('provincia',   provincia);
+    agregar('distrito',    distrito);
+    agregar('direccion',   direccion);
+    agregar('coordenadas', coordenadas);
+    agregar('paquete',     paquete);
+    agregar('cuota_inst',  cuotaInstalacion);
+    agregar('claro_hogar', hogar);
+    agregar('tecnologia',  tec);
+    agregar('full_claro',  full);
+    agregar('plano',       plano);
+    agregar('fecha_nac',   fechaNac);
+    agregar('lugar_nac',   lugarNac);
+    agregar('padre',       padre);
+    agregar('madre',       madre);
+    agregar('cant_decos',  cantDecos !== undefined ? (parseInt(cantDecos) || 0) : undefined);
+    agregar('cant_mesh',   cantMesh  !== undefined ? (parseInt(cantMesh)  || 0) : undefined);
+    agregar('observacion', observacion);
+
+    if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar.' });
+
+    await conn.beginTransaction();
+    vals.push(ventaId);
+    await conn.query(`UPDATE ventas SET ${campos.join(', ')} WHERE id = ?`, vals);
+    const actor = await obtenerActor(conn, req.user.id);
+    for (const cambio of cambios) {
+      await registrarHistorial(conn, ventaId, actor, { ...cambio, tipo: 'ACTUALIZACION' });
+    }
+    await conn.commit();
+    res.json({ ok: true, mensaje: 'Datos de la venta actualizados.' });
+  } catch (e) {
+    await conn.rollback().catch(() => {});
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al actualizar los datos de la venta.' });
   } finally {
     conn.release();
   }
