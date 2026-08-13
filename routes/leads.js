@@ -10,7 +10,7 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
 // Sólo estos estados cierran definitivamente el flujo de asignación/rotación.
-const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'SIN COBERTURA', 'SH NO TOCAR']);
+const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'NO TOCAR', 'SH NO TOCAR', 'SH NO ROTAR']);
 
 function tipificacionProhibida(valor) {
   return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
