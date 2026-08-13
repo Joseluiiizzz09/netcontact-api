@@ -318,6 +318,55 @@ router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
   }
 });
 
+// GET /api/leads/avance-asesor — fotografía histórica propia de cada vendedor.
+// Una rotación posterior nunca cambia la tipificación/observación de esta vista.
+router.get('/avance-asesor', auth(ROLES_BO), async (req, res) => {
+  try {
+    const asesorId = Number(req.query.asesor_id);
+    const fecha = String(req.query.fecha || '').trim();
+    const errores = validar([errorFecha(fecha, 'fecha')]);
+    if (!asesorId || errores) return res.status(400).json({ ok:false, mensaje:errores?.[0] || 'Asesor inválido' });
+    const [usuarios] = await db.query(`SELECT nombre FROM usuarios WHERE id=? LIMIT 1`, [asesorId]);
+    if (!usuarios.length) return res.status(404).json({ ok:false, mensaje:'Asesor no encontrado' });
+    const nombre = String(usuarios[0].nombre || '').trim();
+    const [leads] = await db.query(`
+      SELECT id,n1,n2,distrito,campana,asesor_id,asesor_nombre,DATE_FORMAT(fecha,'%Y-%m-%d') AS fecha,hora_asig,tipif_vend,tipif_hora,obs_asesor,historial
+      FROM leads
+      WHERE (asesor_id=? OR historial LIKE CONCAT('%"asesor":"', ?, '"%'))
+        AND (fecha=? OR historial LIKE ?)
+      ORDER BY created_at DESC
+    `, [asesorId, nombre, fecha, `%"fecha":"${fecha}"%`]);
+
+    const data = [];
+    for (const lead of leads) {
+      let historial = [];
+      try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
+      const asignaciones = historial.filter(h => h?.asesor && h?.fecha === fecha && String(h.asesor).trim() === nombre && h.tipo !== 'TIPIF_VEND');
+      const asignacion = asignaciones[asignaciones.length - 1];
+      const esTitularEnFecha = lead.fecha === fecha && Number(lead.asesor_id) === asesorId;
+      if (!asignacion && !esTitularEnFecha) continue;
+
+      const eventos = historial.filter(h => h?.tipo === 'TIPIF_VEND' && String(h.asesor || '').trim() === nombre && h.fecha === fecha);
+      const evento = eventos[eventos.length - 1];
+      const rotacion = [...historial].reverse().find(h => String(h?.asesorAnterior || '').trim() === nombre && (!h.fecha || h.fecha === fecha));
+      const tipificacion = evento?.tipif ?? rotacion?.tipifVendAntes ?? (esTitularEnFecha ? lead.tipif_vend : '') ?? '';
+      const observacion = asignacion?.obsAsesorPersonal ?? rotacion?.obsAsesorAntes ?? (esTitularEnFecha ? lead.obs_asesor : '') ?? '';
+      data.push({
+        id:lead.id, n1:lead.n1, n2:lead.n2, distrito:lead.distrito, campana:lead.campana,
+        hora_asig:asignacion?.hora || (esTitularEnFecha ? lead.hora_asig : '') || '',
+        tipif_vend:tipificacion,
+        tipif_hora:evento?.hora || (esTitularEnFecha ? lead.tipif_hora : '') || '',
+        obs_asesor:observacion,
+      });
+    }
+    data.sort((a,b) => Number(Boolean(a.tipif_vend)) - Number(Boolean(b.tipif_vend)) || String(b.hora_asig).localeCompare(String(a.hora_asig)));
+    res.json({ ok:true, data });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, mensaje:'Error al obtener el avance del asesor' });
+  }
+});
+
 // POST /api/leads/import-legacy
 // Importacion masiva con historial completo (ASESOR 1-6), tipif_vend, idempotente y transaccional.
 router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
