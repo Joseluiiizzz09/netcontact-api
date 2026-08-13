@@ -821,7 +821,9 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
     if (tipificacion) lineas.push(`[${ts} - ${nombreUsuario}] ${TIP_LABELS_VAL[tipificacion]}`);
     if (obsTexto)     lineas.push(`[${ts} - ${nombreUsuario}] ${obsTexto}`);
 
-    const nuevoHistorialTexto = lineas.join('\n');
+    // VALIDADO cierra las observaciones operativas de Validación. Los cambios
+    // anteriores siguen disponibles en venta_historial para auditoría.
+    const nuevoHistorialTexto = tipificacion === 'validado' ? '' : lineas.join('\n');
     const nuevoEstado         = tipificacion ? TIP_TO_ESTADO_VAL[tipificacion] : null;
     const estadoAnterior      = venta.estado || 'VENTA';
 
