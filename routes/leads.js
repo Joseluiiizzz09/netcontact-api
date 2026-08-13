@@ -150,6 +150,77 @@ router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (
   }
 });
 
+// GET /api/leads/metricas-campanas?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+// Dashboard de Jefatura. La campaña, el periodo y la venta salen de Back Data
+// (leads). Una venta es un número cuya tipificación es VENTA CERRADA.
+router.get('/metricas-campanas', auth(['jefatura', 'usuarios']), async (req, res) => {
+  try {
+    const desde = String(req.query.desde || '').trim();
+    const hasta = String(req.query.hasta || '').trim();
+    const errores = validar([errorFecha(desde, 'desde'), errorFecha(hasta, 'hasta')]);
+    if (errores || !desde || !hasta) {
+      return res.status(400).json({ ok: false, mensaje: errores?.[0] || 'El rango de fechas es obligatorio.' });
+    }
+    const inicio = new Date(`${desde}T00:00:00Z`);
+    const fin = new Date(`${hasta}T00:00:00Z`);
+    const dias = Math.floor((fin - inicio) / 86400000);
+    if (!Number.isFinite(dias) || dias < 0) return res.status(400).json({ ok: false, mensaje: 'La fecha inicial no puede ser posterior a la final.' });
+    if (dias > 366) return res.status(400).json({ ok: false, mensaje: 'El rango máximo permitido es de 366 días.' });
+
+    const telefonoLead = `REGEXP_REPLACE(COALESCE(l.n1,''), '[^0-9]', '')`;
+    const tipificado = `TRIM(COALESCE(l.tipif_vend,'')) <> '' AND UPPER(TRIM(l.tipif_vend)) <> 'NUEVO'`;
+    const ventaCerrada = `UPPER(TRIM(COALESCE(l.tipif_vend,''))) = 'VENTA CERRADA'`;
+
+    const [campanas] = await db.query(`
+      SELECT UPPER(COALESCE(NULLIF(TRIM(l.campana), ''), 'SIN CAMPAÑA')) AS campana,
+        COUNT(*) AS registros,
+        COUNT(DISTINCT ${telefonoLead}) AS numeros,
+        COUNT(DISTINCT CASE WHEN ${tipificado} THEN ${telefonoLead} END) AS tipificados,
+        COUNT(DISTINCT CASE WHEN ${ventaCerrada} THEN ${telefonoLead} END) AS ventas
+      FROM leads l WHERE l.fecha BETWEEN ? AND ?
+      GROUP BY UPPER(COALESCE(NULLIF(TRIM(l.campana), ''), 'SIN CAMPAÑA'))
+      ORDER BY numeros DESC, campana ASC
+    `, [desde, hasta]);
+
+    const [totalesRows] = await db.query(`
+      SELECT COUNT(*) AS registros,
+        COUNT(DISTINCT ${telefonoLead}) AS numeros,
+        COUNT(DISTINCT CASE WHEN ${tipificado} THEN ${telefonoLead} END) AS tipificados,
+        COUNT(DISTINCT CASE WHEN ${ventaCerrada} THEN ${telefonoLead} END) AS ventas
+      FROM leads l WHERE l.fecha BETWEEN ? AND ?
+    `, [desde, hasta]);
+
+    const [diarios] = await db.query(`
+      SELECT DATE_FORMAT(l.fecha, '%Y-%m-%d') AS fecha,
+        COUNT(DISTINCT ${telefonoLead}) AS numeros,
+        COUNT(DISTINCT CASE WHEN ${tipificado} THEN ${telefonoLead} END) AS tipificados,
+        COUNT(DISTINCT CASE WHEN ${ventaCerrada} THEN ${telefonoLead} END) AS ventas
+      FROM leads l WHERE l.fecha BETWEEN ? AND ?
+      GROUP BY l.fecha ORDER BY l.fecha ASC
+    `, [desde, hasta]);
+
+    const data = campanas.map(row => {
+      const numeros = Number(row.numeros) || 0;
+      const ventas = Number(row.ventas) || 0;
+      return { campana:row.campana, registros:Number(row.registros)||0, numeros,
+        tipificados:Number(row.tipificados)||0, ventas,
+        conversion:numeros ? Number(((ventas/numeros)*100).toFixed(2)) : 0 };
+    });
+    const total = totalesRows[0] || {};
+    const totalNumeros = Number(total.numeros) || 0;
+    const totalVentas = Number(total.ventas) || 0;
+    res.json({ ok:true, desde, hasta, data,
+      totales:{ campanas:data.length, registros:Number(total.registros)||0, numeros:totalNumeros,
+        tipificados:Number(total.tipificados)||0, ventas:totalVentas,
+        conversion:totalNumeros ? Number(((totalVentas/totalNumeros)*100).toFixed(2)) : 0 },
+      diarios:diarios.map(row => ({ fecha:row.fecha, numeros:Number(row.numeros)||0,
+        tipificados:Number(row.tipificados)||0, ventas:Number(row.ventas)||0 })) });
+  } catch (e) {
+    console.error('[METRICAS CAMPAÑAS]', e);
+    res.status(500).json({ ok:false, mensaje:'Error al calcular las métricas de campañas.' });
+  }
+});
+
 // POST /api/leads/import-legacy
 // Importacion masiva con historial completo (ASESOR 1-6), tipif_vend, idempotente y transaccional.
 router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
