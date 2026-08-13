@@ -37,9 +37,43 @@ module.exports = function auth(cargosPermitidos = []) {
 
       req.user = decoded;
 
+      // Acceso Directo de Jefatura: conserva al administrador como actor,
+      // pero aplica exactamente el alcance vigente del usuario seleccionado.
+      const viewUserId = Number(req.headers['x-nc-view-user']);
+      const viewArea = String(req.headers['x-nc-view-area'] || '').trim();
+      if (viewUserId || viewArea) {
+        if (decoded.cargo !== 'jefatura' || !Number.isInteger(viewUserId) || viewUserId <= 0 || !viewArea) {
+          return res.status(403).json({ ok: false, mensaje: 'Acceso directo no autorizado' });
+        }
+        const [targets] = await db.query(
+          `SELECT id, nombre, usuario, cargo, sala, activo, permisos FROM usuarios WHERE id = ? LIMIT 1`,
+          [viewUserId]
+        );
+        const target = targets[0];
+        if (!target || !target.activo) {
+          return res.status(403).json({ ok: false, mensaje: 'El usuario seleccionado no esta activo' });
+        }
+        let targetPermisos = [];
+        try { targetPermisos = JSON.parse(target.permisos || '[]'); } catch {}
+        if (target.cargo !== viewArea && !targetPermisos.includes(viewArea)) {
+          return res.status(403).json({ ok: false, mensaje: 'El usuario no tiene acceso a esa area' });
+        }
+        req.actor = decoded;
+        req.user = {
+          id: target.id,
+          nombre: target.nombre,
+          usuario: target.usuario,
+          cargo: viewArea,
+          cargoPrincipal: target.cargo,
+          sala: target.sala,
+          permisos: targetPermisos,
+          accesoDirectoJefatura: true,
+        };
+      }
+
       if (cargosPermitidos.length > 0) {
-        const cargoOk    = cargosPermitidos.includes(decoded.cargo);
-        const permisosOk = decoded.permisos && decoded.permisos.some(p => cargosPermitidos.includes(p));
+        const cargoOk    = cargosPermitidos.includes(req.user.cargo);
+        const permisosOk = req.user.permisos && req.user.permisos.some(p => cargosPermitidos.includes(p));
         if (!cargoOk && !permisosOk) {
           return res.status(403).json({ ok: false, mensaje: 'Sin permisos para esta acción' });
         }

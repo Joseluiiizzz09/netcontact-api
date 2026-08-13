@@ -17,7 +17,7 @@ if (!FRONTEND_URL || FRONTEND_URL === '*') {
 app.use(cors({
   origin: (!FRONTEND_URL || FRONTEND_URL === '*') ? '*' : FRONTEND_URL.split(',').map(u => u.trim()),
   methods: ['GET','POST','PATCH','PUT','DELETE'],
-  allowedHeaders: ['Content-Type','Authorization'],
+  allowedHeaders: ['Content-Type','Authorization','X-NC-View-User','X-NC-View-Area'],
   credentials: false,
 }));
 
