@@ -728,6 +728,18 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       }
     }
 
+    let derivadoPor2Id = lead.derivado_por_2_id;
+    let derivadoPor2Nombre = lead.derivado_por_2_nombre;
+    if (tipif_back_2 !== undefined) {
+      if (tipifBack2Real === 'DERIVADO' || tipifBack2Real === 'LLAMANDO') {
+        derivadoPor2Id = req.user.id;
+        derivadoPor2Nombre = await nombreUsuario(req.user.id);
+      } else {
+        derivadoPor2Id = null;
+        derivadoPor2Nombre = '';
+      }
+    }
+
     const asesorCambia = !!asesor_nombre && asesor_nombre !== (lead.asesor_nombre || '');
     let reasignadoPorNombre = '';
     if (asesorCambia) {
@@ -849,8 +861,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // del titular + registra el evento (con ts) a nombre del titular actual.
     if (!esAsesor || esActual) {
       registrarTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
-      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=?, distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
-        [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+      await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
+        [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
       return res.json({ ok: true, mensaje: 'Tipificación guardada' });
     }
 
@@ -870,8 +882,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       }
       if (ultimaAsig && (ultimaAsig.asesor || '').trim() === miNombre) {
         registrarTipifEvent(historial, miNombre, tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
-        await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=?, distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
-          [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+        await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
+          [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
         return res.json({ ok: true, mensaje: 'Tipificación guardada' });
       }
     }
@@ -889,8 +901,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     historial[idx].tipifVendAntes = tipif_vend || '';
     if (documentoTexto) historial[idx].documento = documentoTexto;
     registrarTipifEvent(historial, miNombre, tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
-    await db.query(`UPDATE leads SET historial=?, obs_asesor=?, distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
-      [JSON.stringify(historial), obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+    await db.query(`UPDATE leads SET historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
+      [JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
     res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al guardar tipificación' });
@@ -935,17 +947,6 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
       }
     }
 
-    let derivadoPor2Id = lead.derivado_por_2_id;
-    let derivadoPor2Nombre = lead.derivado_por_2_nombre;
-    if (tipif_back_2 !== undefined) {
-      if (tipifBack2Real === 'DERIVADO' || tipifBack2Real === 'LLAMANDO') {
-        derivadoPor2Id = req.user.id;
-        derivadoPor2Nombre = await nombreUsuario(req.user.id);
-      } else {
-        derivadoPor2Id = null;
-        derivadoPor2Nombre = '';
-      }
-    }
     await db.query(`UPDATE leads SET obs_asesor=?, historial=? WHERE id=?`, [obs||'', JSON.stringify(historial), req.params.id]);
     res.json({ ok: true, mensaje: 'Observacion guardada' });
   } catch(e) {
