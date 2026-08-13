@@ -161,6 +161,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
 
     const salida = data.map(l => {
       const historial = (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })();
+      const rotacionesHistorial = historial.filter(h => String(h?.tipo || '').toUpperCase() === 'ROTACION').length;
+      const asignacionesHistorial = historial.filter(h => h?.asesor && String(h?.tipo || '').toUpperCase() !== 'TIPIF_VEND').length;
+      const rotacionesReales = Math.max(Number(l.rotaciones || 0), rotacionesHistorial, Math.max(0, asignacionesHistorial - 1));
       let obsAsesor = l.obs_asesor || '';
       const documentoEnObs = obsAsesor.match(/\b(DNI|CE|RUC)\s*:\s*\d+/i)?.[0] || '';
       if (visorAsesorId && visorAsesorNombre && documentoEnObs) {
@@ -179,6 +182,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const ventaCerrada = ventaConfirmada === 1 && ventaAsesorId;
       return {
         ...l,
+        rotaciones: rotacionesReales,
         venta_confirmada: ventaConfirmada,
         venta_asesor_id: ventaAsesorId,
         venta_asesor_nombre: ventaAsesorNombre,
@@ -634,7 +638,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     `, [asesorNuevo.id, asesorNuevo.nombre, hora, JSON.stringify(historial), req.params.id]);
 
     await conn.commit();
-    res.json({ ok: true, id: parseInt(req.params.id), asesor: asesorNuevo.nombre, historial, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
+    res.json({ ok: true, id: parseInt(req.params.id), asesor: asesorNuevo.nombre, historial, rotaciones:Number(lead.rotaciones || 0) + 1, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
   } catch (e) {
     if (conn) await conn.rollback().catch(() => {});
     console.error(e);
