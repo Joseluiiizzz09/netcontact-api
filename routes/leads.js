@@ -565,12 +565,12 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     }
     const n1Clean = String(lead.n1 || '').trim();
     const [ventasProtegidas] = await conn.query(
-      `SELECT id FROM ventas WHERE TRIM(telefono1) = ? AND UPPER(estado) IN ('INSTALADO', 'EN_EJECUCION') LIMIT 1`,
+      `SELECT id FROM ventas WHERE TRIM(telefono1) = ? LIMIT 1`,
       [n1Clean]
     );
     if (ventasProtegidas.length > 0) {
       await conn.rollback();
-      return res.status(409).json({ ok: false, mensaje: 'Número protegido: tiene instalación o ejecución activa en seguimiento' });
+      return res.status(409).json({ ok: false, mensaje: 'Número protegido: ya generó una venta y no se puede rotar' });
     }
 
     const [usuarios] = await conn.query(`SELECT id, nombre FROM usuarios WHERE nombre = ? AND activo = 1 LIMIT 1`, [asesor_nombre.trim()]);
@@ -666,6 +666,13 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     const lead = rows[0];
+
+    if (asesor_nombre) {
+      const [ventasCerradas] = await db.query(`SELECT id FROM ventas WHERE TRIM(telefono1)=TRIM(?) LIMIT 1`, [lead.n1 || '']);
+      if (ventasCerradas.length) {
+        return res.status(409).json({ ok:false, mensaje:'Número protegido: ya generó una venta y no se puede reasignar' });
+      }
+    }
 
     // Defensa del servidor: aunque un cliente antiguo o una selección pendiente
     // intente reasignarlo, estos números nunca pueden recibir otro asesor.
@@ -874,11 +881,22 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
       return res.status(400).json({ ok: false, mensaje: 'obs_asesor no puede superar 2000 caracteres' });
     const [rows] = await db.query(`SELECT id, asesor_id, historial FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
-    // La observación global pertenece únicamente a la asignación vigente. Un asesor
-    // anterior conserva su comentario en historial, pero jamás puede transferirlo ni
-    // sobrescribir el comentario del nuevo titular después de una rotación.
-    if (req.user.cargo === 'asesor' && Number(rows[0].asesor_id) !== Number(req.user.id))
-      return res.status(403).json({ ok: false, mensaje: 'Este número ya fue asignado a otro asesor' });
+    // La observación global pertenece a la asignación vigente. Si un asesor anterior
+    // modifica SU comentario, se actualiza exclusivamente su tramo del historial.
+    if (req.user.cargo === 'asesor' && Number(rows[0].asesor_id) !== Number(req.user.id)) {
+      const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+      const miNombre = String(me[0]?.nombre || '').trim();
+      let historial = [];
+      try { historial = JSON.parse(rows[0].historial || '[]'); } catch { historial = []; }
+      let idx = -1;
+      for (let i = historial.length - 1; i >= 0; i--) {
+        if (String(historial[i]?.asesorAnterior || '').trim() === miNombre) { idx = i; break; }
+      }
+      if (idx < 0) return res.status(403).json({ ok: false, mensaje: 'No puedes modificar observaciones de otros asesores' });
+      historial[idx] = { ...historial[idx], obsAsesorAntes:String(obs || '') };
+      await db.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(historial), req.params.id]);
+      return res.json({ ok: true, mensaje: 'Observación personal guardada' });
+    }
     await db.query(`UPDATE leads SET obs_asesor=? WHERE id=?`, [obs||'', req.params.id]);
     res.json({ ok: true, mensaje: 'Observacion guardada' });
   } catch(e) {
