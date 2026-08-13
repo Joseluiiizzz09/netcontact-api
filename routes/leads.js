@@ -181,6 +181,24 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const ventaAsesorId = ventaInfo?.venta_asesor_id ?? null;
       const ventaAsesorNombre = ventaInfo?.venta_asesor_nombre ?? null;
       const ventaCerrada = ventaConfirmada === 1 && ventaAsesorId;
+      let obsAsesorPersonal = obsAsesor;
+      if (visorAsesorId && visorAsesorNombre) {
+        const esTitularVista = Number(l.asesor_id) === Number(visorAsesorId)
+          || String(l.asesor_nombre || '').trim() === visorAsesorNombre.trim();
+        if (esTitularVista) {
+          const asignacionesVista = historial.filter(h =>
+            h?.asesor && h.tipo !== 'TIPIF_VEND'
+            && String(h.asesor).trim() === visorAsesorNombre.trim()
+          );
+          const asignacionVista = asignacionesVista[asignacionesVista.length - 1];
+          obsAsesorPersonal = asignacionVista?.obsAsesorPersonal ?? obsAsesor;
+        } else {
+          const rotacionVista = [...historial].reverse().find(h =>
+            String(h?.asesorAnterior || '').trim() === visorAsesorNombre.trim()
+          );
+          obsAsesorPersonal = rotacionVista?.obsAsesorAntes || '';
+        }
+      }
       return {
         ...l,
         rotaciones: rotacionesReales,
@@ -189,6 +207,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         venta_asesor_nombre: ventaAsesorNombre,
         ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
+        obs_asesor_personal: obsAsesorPersonal,
         historial,
       };
     });
@@ -877,7 +896,7 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
     const { obs } = req.body;
     if (obs && String(obs).length > 2000)
       return res.status(400).json({ ok: false, mensaje: 'obs_asesor no puede superar 2000 caracteres' });
-    const [rows] = await db.query(`SELECT id, asesor_id, historial FROM leads WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id, asesor_nombre, historial FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     // La observación global pertenece a la asignación vigente. Si un asesor anterior
     // modifica SU comentario, se actualiza exclusivamente su tramo del historial.
@@ -895,7 +914,20 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
       await db.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(historial), req.params.id]);
       return res.json({ ok: true, mensaje: 'Observación personal guardada' });
     }
-    await db.query(`UPDATE leads SET obs_asesor=? WHERE id=?`, [obs||'', req.params.id]);
+    let historial = [];
+    try { historial = JSON.parse(rows[0].historial || '[]'); } catch { historial = []; }
+    const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+    const nombreActor = String(me[0]?.nombre || rows[0].asesor_nombre || '').trim();
+    if (nombreActor) {
+      for (let i = historial.length - 1; i >= 0; i--) {
+        const h = historial[i];
+        if (h?.asesor && h.tipo !== 'TIPIF_VEND' && String(h.asesor).trim() === nombreActor) {
+          historial[i] = { ...h, obsAsesorPersonal:String(obs || '') };
+          break;
+        }
+      }
+    }
+    await db.query(`UPDATE leads SET obs_asesor=?, historial=? WHERE id=?`, [obs||'', JSON.stringify(historial), req.params.id]);
     res.json({ ok: true, mensaje: 'Observacion guardada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al guardar observación' });
