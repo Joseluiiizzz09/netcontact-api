@@ -874,15 +874,11 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
       return res.status(400).json({ ok: false, mensaje: 'obs_asesor no puede superar 2000 caracteres' });
     const [rows] = await db.query(`SELECT id, asesor_id, historial FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
-    if (req.user.cargo === 'asesor' && Number(rows[0].asesor_id) !== Number(req.user.id)) {
-      // Permitir si el asesor participó del número (aparece en el historial): así puede
-      // guardar el DNI al cerrar una venta de un número que trabajó y luego rotó.
-      const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
-      const miNombre = (me[0]?.nombre || '').trim();
-      let hist = []; try { hist = JSON.parse(rows[0].historial || '[]'); } catch { hist = []; }
-      const participo = hist.some(h => (h?.asesor || '').trim() === miNombre || (h?.asesorAnterior || '').trim() === miNombre);
-      if (!participo) return res.status(403).json({ ok: false, mensaje: 'No puedes modificar observaciones de leads de otros asesores' });
-    }
+    // La observación global pertenece únicamente a la asignación vigente. Un asesor
+    // anterior conserva su comentario en historial, pero jamás puede transferirlo ni
+    // sobrescribir el comentario del nuevo titular después de una rotación.
+    if (req.user.cargo === 'asesor' && Number(rows[0].asesor_id) !== Number(req.user.id))
+      return res.status(403).json({ ok: false, mensaje: 'Este número ya fue asignado a otro asesor' });
     await db.query(`UPDATE leads SET obs_asesor=? WHERE id=?`, [obs||'', req.params.id]);
     res.json({ ok: true, mensaje: 'Observacion guardada' });
   } catch(e) {
