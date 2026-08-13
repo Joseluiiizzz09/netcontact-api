@@ -402,7 +402,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
 // ===== GET /api/ventas =====
 router.get('/', auth(ROLES_VENTAS), async (req, res) => {
   try {
-    const { dni, estado, desde, hasta, asesor_id, programacion, alcance, area } = req.query;
+    const { dni, estado, desde, hasta, asesor_id, programacion, alcance, area, seguimiento_campo } = req.query;
     const permisosUsuario = Array.isArray(req.user.permisos) ? req.user.permisos : [];
     if (area && area !== req.user.cargo && !permisosUsuario.includes(area)) {
       return res.status(403).json({ ok: false, mensaje: 'Sin permiso para consultar esta área' });
@@ -485,6 +485,10 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
 
     if (cargoEfectivo === 'seguimiento') {
       sql += ` AND LOWER(TRIM(COALESCE(v.estado_supgrab, ''))) = 'conforme'`;
+    }
+
+    if (seguimiento_campo === '1') {
+      sql += ` AND UPPER(TRIM(v.estado)) IN ('EN_EJECUCION','INSTALADO','CAIDA','RECHAZO_CAMPO','TECNICO_CASA')`;
     }
 
     if (cargoEfectivo === 'programacion' || programacion === '1') {
