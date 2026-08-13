@@ -752,7 +752,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       obsFinal = String(coordenadas || '').trim();
     }
     const esAsesor = req.user.cargo === 'asesor';
-    const esActual = lead.asesor_id === req.user.id;
+    const esActual = Number(lead.asesor_id) === Number(req.user.id);
     if (esAsesor && String(tipif_vend || '').trim().toUpperCase() === 'INSTALADO')
       return res.status(403).json({ ok: false, mensaje: 'La tipificación INSTALADO es exclusiva de Back Data' });
     let historial = [];
@@ -801,7 +801,7 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
       return res.status(400).json({ ok: false, mensaje: 'obs_asesor no puede superar 2000 caracteres' });
     const [rows] = await db.query(`SELECT id, asesor_id, historial FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
-    if (req.user.cargo === 'asesor' && rows[0].asesor_id !== req.user.id) {
+    if (req.user.cargo === 'asesor' && Number(rows[0].asesor_id) !== Number(req.user.id)) {
       // Permitir si el asesor participó del número (aparece en el historial): así puede
       // guardar el DNI al cerrar una venta de un número que trabajó y luego rotó.
       const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
