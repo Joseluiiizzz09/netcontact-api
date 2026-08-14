@@ -459,6 +459,16 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                    GROUP BY venta_id
                  ) h2 ON h1.id = h2.max_id
                ) ph_prog ON ph_prog.venta_id = v.id
+               LEFT JOIN (
+                 SELECT vh.venta_id, vh.tipo AS ultimo_tipo_estado
+                 FROM venta_historial vh
+                 INNER JOIN (
+                   SELECT venta_id, MAX(id) AS max_id
+                   FROM venta_historial
+                   WHERE campo = 'estado'
+                   GROUP BY venta_id
+                 ) lh ON vh.id = lh.max_id
+               ) uh ON uh.venta_id = v.id
                WHERE 1=1`;
     const params = [];
 
@@ -502,6 +512,10 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                     AND LOWER(v.estado_grab) = 'grabado'
                     AND LOWER(COALESCE(v.estado_supgrab, 'sin_revisar')) = 'aprobado'))`;
       params.push(...ESTADOS_PROGRAMACION);
+    }
+
+    if (cargoEfectivo === 'validacion') {
+      sql += ` AND (uh.venta_id IS NULL OR uh.ultimo_tipo_estado = 'CAMBIO_VALIDACION' OR UPPER(TRIM(v.estado)) = 'VENTA')`;
     }
 
     if (dni)    { sql += ` AND v.dni LIKE ?`;              params.push(`%${dni}%`); }
@@ -802,6 +816,21 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
     }
     const venta = rows[0];
 
+    // Guardia: VENTA solo puede aplicarse desde estados propios de Validación
+    if (tipificacion === 'venta') {
+      const ESTADOS_PROPIOS_VAL = new Set([
+        'VENTA','CORTA_LLAMADA','FRAUDE','NO_DESEA','NO_CONTESTA',
+        'BUZON_VOZ','SERVICIO_ACTIVO','CORREGIR','MALA_OFERTA',
+      ]);
+      if (!ESTADOS_PROPIOS_VAL.has((venta.estado || 'VENTA').toUpperCase())) {
+        await conn.rollback();
+        return res.status(409).json({
+          ok: false,
+          mensaje: 'Esta venta ya avanzó en el flujo. No se puede revertir a VENTA desde Validación.',
+        });
+      }
+    }
+
     // Control de concurrencia optimista
     if (estadoAnteriorEsperado != null) {
       const estadoActualDB = (venta.estado || 'VENTA').toLowerCase();
@@ -983,6 +1012,29 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       const estadoActual = String(rows[0].estado || '').toUpperCase();
       const PRE_EJECUCION = new Set(['VENTA','GRABADO','APROBADO','VALIDADO']);
       if (!PRE_EJECUCION.has(estadoActual)) _estadoAplicar = undefined;
+    }
+    // Guardia no_conforme: solo revertir a VALIDADO si la venta está en VALIDADO o APROBADO
+    if (
+      estado !== undefined &&
+      String(estado).toUpperCase() === 'VALIDADO' &&
+      estado_supgrab !== undefined &&
+      String(estado_supgrab).toLowerCase() === 'no_conforme'
+    ) {
+      const estadoActual = String(rows[0].estado || '').toUpperCase();
+      const PRE_NOCONFORME = new Set(['VALIDADO', 'APROBADO']);
+      if (!PRE_NOCONFORME.has(estadoActual)) _estadoAplicar = undefined;
+    }
+    // Guardia RECHAZADO de Programación: solo revertir a VALIDADO si la venta está en un estado de Programación
+    if (
+      estado !== undefined &&
+      String(estado).toUpperCase() === 'VALIDADO' &&
+      cargoEfectivo === 'programacion' &&
+      estado_supgrab !== undefined &&
+      String(estado_supgrab).toLowerCase() === 'sin_revisar'
+    ) {
+      const estadoActual = String(rows[0].estado || '').toUpperCase();
+      const ESTADOS_PROG_VAL = new Set(['VALIDADO','APROBADO','PROGRAMADO','PENDIENTE','BLOQUEADO','SIN_AGENDA','CARACTER_ESPECIAL']);
+      if (!ESTADOS_PROG_VAL.has(estadoActual)) _estadoAplicar = undefined;
     }
     agregarCambio('estado', _estadoAplicar);
     agregarCambio('obs_backoffice', obs_backoffice);
