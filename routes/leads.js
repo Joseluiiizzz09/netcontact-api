@@ -1004,9 +1004,16 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       obsFinal = String(coordenadas || '').trim();
     }
     const esAsesor = req.user.cargo === 'asesor';
-    const esActual = Number(lead.asesor_id) === Number(req.user.id);
     if (esAsesor && String(tipif_vend || '').trim().toUpperCase() === 'INSTALADO')
       return res.status(403).json({ ok: false, mensaje: 'La tipificación INSTALADO es exclusiva de Back Data' });
+    // Obtener nombre propio antes del check para cubrir el caso asesor_id=null pero asesor_nombre coincide.
+    let miNombre = '';
+    if (esAsesor) {
+      const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+      miNombre = (me[0]?.nombre || '').trim();
+    }
+    const esActual = Number(lead.asesor_id) === Number(req.user.id)
+      || (esAsesor && !!miNombre && String(lead.asesor_nombre || '').trim() === miNombre);
     let historial = [];
     try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
 
@@ -1022,8 +1029,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // Asesor que YA no es el titular: puede ACTUALIZAR su propia tipificación (p.ej.
     // recontactó al cliente). Actualiza su registro en el historial y su evento con ts,
     // para que la base tome la más reciente. No toca la tipif del titular actual.
-    const [me] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
-    const miNombre = (me[0]?.nombre || '').trim();
+    // miNombre ya fue obtenido arriba.
 
     // CASO B: asesor_id nulo/inválido pero soy el asesor actual según la última asignación real del historial.
     // Ocurre cuando el lead fue creado/importado con un nombre que no resolvió a un id en BD.
