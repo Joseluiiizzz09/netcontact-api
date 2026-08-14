@@ -870,19 +870,18 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
       reasignadoPorNombre = await nombreUsuario(req.user.id);
     }
 
-    // Historial: inyecta derivadoPor (DERIVADO) y asesorAnterior/reasignadoPor (cambio de asesor).
+    // Las tipificaciones Back se aplican sobre el historial vigente de la BD.
+    // No se confía en una copia enviada por el navegador porque el polling puede
+    // volverla obsoleta y provocar que Back 2 se pierda o sobrescriba Back 1.
+    const cambiaTipifBack = tipif_back !== undefined || tipif_back_2 !== undefined;
+    let historialServidor = [];
+    try { historialServidor = JSON.parse(lead.historial || '[]'); } catch { historialServidor = []; }
     let historialJSON;
-    if (historial) {
-      const histArr = [...historial];
+    if (historial || cambiaTipifBack) {
+      const histArr = cambiaTipifBack ? [...historialServidor] : [...historial];
       if (histArr.length > 0) {
         const lastIdx = histArr.length - 1;
         let lastEntry = { ...histArr[lastIdx] };
-        if (tipif_back !== undefined && (tipifBackReal === 'DERIVADO' || tipifBackReal === 'LLAMANDO')) {
-          lastEntry = { ...lastEntry, derivadoPor: derivadoPorNombre };
-        }
-        if (tipif_back_2 !== undefined && (tipifBack2Real === 'DERIVADO' || tipifBack2Real === 'LLAMANDO')) {
-          lastEntry = { ...lastEntry, derivadoPor2: derivadoPor2Nombre };
-        }
         if (asesorCambia) {
           if (!lastEntry.asesorAnterior) lastEntry.asesorAnterior = lead.asesor_nombre || '';
           if (reasignadoPorNombre) lastEntry.reasignadoPor = reasignadoPorNombre;
@@ -893,16 +892,28 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
         }
         histArr[lastIdx] = lastEntry;
       }
-      if (tipif_back !== undefined || tipif_back_2 !== undefined) {
+      if (cambiaTipifBack) {
         const valorOriginal = tipif_back_2 !== undefined ? tipifBack2Real : tipifBackReal;
+        const slot = tipif_back_2 !== undefined ? 2 : 1;
         const obsBackPersonal = !valorOriginal ? '' : (valorOriginal === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
         for (let i = histArr.length - 1; i >= 0; i--) {
           const h = histArr[i];
           if (h?.asesor && !['TIPIF_VEND','TIPIF_BACK','DERIVADO'].includes(String(h.tipo || '').toUpperCase()) && String(h.asesor).trim() === String(lead.asesor_nombre || '').trim()) {
-            histArr[i] = { ...h, obsBackPersonal, tipifBackOriginal:valorOriginal, tipifBackSlot:tipif_back_2 !== undefined ? 2 : 1 };
+            histArr[i] = { ...h, obsBackPersonal, tipifBackOriginal:valorOriginal, tipifBackSlot:slot };
             break;
           }
         }
+        histArr.push({
+          tipo: valorOriginal === 'DERIVADO' ? 'DERIVADO' : 'TIPIF_BACK',
+          asesor: lead.asesor_nombre || '',
+          hora: horaPeruAhora(),
+          fecha: fechaPeruHoy(),
+          tipifBackNueva: valorOriginal,
+          tipifBackSlot: slot,
+          obsBackPersonal,
+          registradoPor: await nombreUsuario(req.user.id),
+          motivo: slot === 2 ? 'Segunda tipificacion Back' : 'Cambio tipif. back',
+        });
       }
       historialJSON = JSON.stringify(histArr);
     } else {
@@ -932,6 +943,7 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
 
     res.json({ ok: true, rotaciones:Number(lead.rotaciones || 0) + (asesorCambia ? 1 : 0), mensaje: 'Lead actualizado' });
   } catch(e) {
+    console.error('Error actualizando lead:', e);
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar lead' });
   }
 });
