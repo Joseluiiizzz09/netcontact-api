@@ -182,6 +182,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const ventaAsesorNombre = ventaInfo?.venta_asesor_nombre ?? null;
       const ventaCerrada = ventaConfirmada === 1 && ventaAsesorId;
       let obsAsesorPersonal = obsAsesor;
+      let obsBackPersonal = l.obs_back || '';
       if (visorAsesorId && visorAsesorNombre) {
         const esTitularVista = Number(l.asesor_id) === Number(visorAsesorId)
           || String(l.asesor_nombre || '').trim() === visorAsesorNombre.trim();
@@ -192,11 +193,13 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
           );
           const asignacionVista = asignacionesVista[asignacionesVista.length - 1];
           obsAsesorPersonal = asignacionVista?.obsAsesorPersonal ?? obsAsesor;
+          obsBackPersonal = asignacionVista?.obsBackPersonal ?? '';
         } else {
           const rotacionVista = [...historial].reverse().find(h =>
             String(h?.asesorAnterior || '').trim() === visorAsesorNombre.trim()
           );
           obsAsesorPersonal = rotacionVista?.obsAsesorAntes || '';
+          obsBackPersonal = rotacionVista?.obsBackAntes || '';
         }
       }
       return {
@@ -208,6 +211,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
         obs_asesor_personal: obsAsesorPersonal,
+        obs_back_personal: obsBackPersonal,
         historial,
       };
     });
@@ -351,12 +355,14 @@ router.get('/avance-asesor', auth(ROLES_BO), async (req, res) => {
       const rotacion = [...historial].reverse().find(h => String(h?.asesorAnterior || '').trim() === nombre && (!h.fecha || h.fecha === fecha));
       const tipificacion = evento?.tipif ?? rotacion?.tipifVendAntes ?? (esTitularEnFecha ? lead.tipif_vend : '') ?? '';
       const observacion = asignacion?.obsAsesorPersonal ?? rotacion?.obsAsesorAntes ?? (esTitularEnFecha ? lead.obs_asesor : '') ?? '';
+      const obsBack = asignacion?.obsBackPersonal ?? rotacion?.obsBackAntes ?? '';
       data.push({
         id:lead.id, n1:lead.n1, n2:lead.n2, distrito:lead.distrito, campana:lead.campana,
         hora_asig:asignacion?.hora || (esTitularEnFecha ? lead.hora_asig : '') || '',
         tipif_vend:tipificacion,
         tipif_hora:evento?.hora || (esTitularEnFecha ? lead.tipif_hora : '') || '',
         obs_asesor:observacion,
+        obs_back:obsBack,
       });
     }
     data.sort((a,b) => Number(Boolean(a.tipif_vend)) - Number(Boolean(b.tipif_vend)) || String(b.hora_asig).localeCompare(String(a.hora_asig)));
@@ -575,11 +581,13 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       }
 
       const horaFinal  = asesorId ? horaAhora : '';
+      const tipifBackInicial = normalizarTipifBack(l.tipif_back);
+      const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
       const historial  = asesorId
-        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaHoy, motivo: 'Asignacion inicial' }])
+        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaHoy, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1 }])
         : '[]';
 
-      const tipifBack = normalizarTipifBack(l.tipif_back);
+      const tipifBack = tipifBackInicial;
       const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
       const derivadoPorNombre = registraAutor ? await nombreUsuario(req.user.id) : '';
       const [result] = await db.query(`
@@ -743,6 +751,10 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       tipifBackAntes: lead.tipif_back || '',
       tipifVendAntes: lead.tipif_vend || '',
       obsAsesorAntes: lead.obs_asesor || '',
+      obsBackAntes: (() => {
+        const asignaciones = historial.filter(h => h?.asesor && h.tipo !== 'TIPIF_VEND' && String(h.asesor).trim() === String(lead.asesor_nombre || '').trim());
+        return asignaciones[asignaciones.length - 1]?.obsBackPersonal || '';
+      })(),
       hora,
       fecha,
       motivo: String(motivo || '').trim() || 'Rotacion manual',
@@ -752,8 +764,6 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     await conn.query(`
       UPDATE leads SET
         asesor_id = ?, asesor_nombre = ?,
-        tipif_back = '', tipif_back_2 = '', derivado_por_id = NULL, derivado_por_nombre = '',
-        derivado_por_2_id = NULL, derivado_por_2_nombre = '',
         hora_asig = ?, sin_asignar = 0,
         rotaciones = rotaciones + 1,
         tipif_vend = '', tipif_hora = '', obs_asesor = '',
@@ -872,6 +882,17 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
         }
         histArr[lastIdx] = lastEntry;
       }
+      if (tipif_back !== undefined || tipif_back_2 !== undefined) {
+        const valorOriginal = tipif_back_2 !== undefined ? tipifBack2Real : tipifBackReal;
+        const obsBackPersonal = !valorOriginal ? '' : (valorOriginal === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
+        for (let i = histArr.length - 1; i >= 0; i--) {
+          const h = histArr[i];
+          if (h?.asesor && h.tipo !== 'TIPIF_VEND' && String(h.asesor).trim() === String(lead.asesor_nombre || '').trim()) {
+            histArr[i] = { ...h, obsBackPersonal, tipifBackOriginal:valorOriginal, tipifBackSlot:tipif_back_2 !== undefined ? 2 : 1 };
+            break;
+          }
+        }
+      }
       historialJSON = JSON.stringify(histArr);
     } else {
       historialJSON = lead.historial;
@@ -889,11 +910,11 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
         derivado_por_id=?, derivado_por_nombre=?, derivado_por_2_id=?, derivado_por_2_nombre=?${sqlExtra}
       WHERE id=?
     `, [
-      asesorId, asesorNombreReal, asesorCambia ? '' : tipifBackReal, asesorCambia ? '' : tipifBack2Real,
+      asesorId, asesorNombreReal, tipifBackReal, tipifBack2Real,
       horaReal, asesorId?0:1, historialJSON,
       asesorCambia ? 1 : 0,
-      asesorCambia ? null : derivadoPorId, asesorCambia ? '' : derivadoPorNombre,
-      asesorCambia ? null : derivadoPor2Id, asesorCambia ? '' : derivadoPor2Nombre,
+      derivadoPorId, derivadoPorNombre,
+      derivadoPor2Id, derivadoPor2Nombre,
       ...paramsExtra,
       req.params.id
     ]);
