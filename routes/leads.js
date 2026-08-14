@@ -583,21 +583,22 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const horaFinal  = asesorId ? horaAhora : '';
       const tipifBackInicial = normalizarTipifBack(l.tipif_back);
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
+      const asignadoPor = asesorId ? await nombreUsuario(req.user.id) : '';
       const historial  = asesorId
-        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaHoy, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1 }])
+        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaLead, asignadoPor, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1 }])
         : '[]';
 
       const tipifBack = tipifBackInicial;
       const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
       const derivadoPorNombre = registraAutor ? await nombreUsuario(req.user.id) : '';
       const [result] = await db.query(`
-        INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         l.campana||'', l.distrito||'', l.n1, l.n2||null,
         l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
         registraAutor ? req.user.id : null, derivadoPorNombre,
-        asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial
+        asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, asesorId?1:0
       ]);
       ids.push(result.insertId);
       fechasUsadas.push(fechaLead);
@@ -734,7 +735,8 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     const fechaUltima = normalizarFechaAsignacion(lead.fecha) || fechaPeruHoy();
     const horaUltima  = String(lead.hora_asig || '').trim();
     const ultimaAsignacion = horaUltima ? new Date(`${fechaUltima}T${horaUltima}:00-05:00`) : null;
-    if (ultimaAsignacion && !Number.isNaN(ultimaAsignacion.getTime())) {
+    const esBaseHoy = fechaUltima === fechaPeruHoy();
+    if (!esBaseHoy && ultimaAsignacion && !Number.isNaN(ultimaAsignacion.getTime())) {
       const minutos = Math.floor((Date.now() - ultimaAsignacion.getTime()) / 60000);
       if (minutos < 120) {
         await conn.rollback();
