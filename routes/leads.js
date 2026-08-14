@@ -427,16 +427,20 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
           : [];
         const lastAsesor = asesores.length ? asesores[asesores.length - 1] : '';
 
-        const historialArray = asesores.map((a, i) => ({
-          asesor:         a,
-          asesorAnterior: i > 0 ? asesores[i - 1] : '',
-          tipo:           i > 0 ? 'ROTACION' : '',
-          hora:           i === asesores.length - 1 ? hora : '',
-          fecha:          fechaLead,
-          motivo:         i === 0 ? 'Asignacion importada' : 'Rotacion importada',
-          tipif_vend:     i === asesores.length - 1 ? tipifVend : '',
-          importado:      true,
-        }));
+        const cargadoPorImport = await nombreUsuario(req.user.id);
+        const historialArray = asesores.length > 0
+          ? asesores.map((a, i) => ({
+              asesor:         a,
+              asesorAnterior: i > 0 ? asesores[i - 1] : '',
+              tipo:           i > 0 ? 'ROTACION' : '',
+              hora:           i === asesores.length - 1 ? hora : '',
+              fecha:          fechaLead,
+              motivo:         i === 0 ? 'Asignacion importada' : 'Rotacion importada',
+              tipif_vend:     i === asesores.length - 1 ? tipifVend : '',
+              importado:      true,
+              ...(i === 0 ? { cargadoPor: cargadoPorImport } : {}),
+            }))
+          : [{ tipo: 'CARGA', cargadoPor: cargadoPorImport, fecha: fechaLead, motivo: 'Importacion masiva' }];
 
         // Buscar asesor en usuarios (case insensitive)
         let asesorId = null, asesorNombre = '';
@@ -589,10 +593,10 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const horaFinal  = asesorId ? horaAhora : '';
       const tipifBackInicial = normalizarTipifBack(l.tipif_back);
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
-      const asignadoPor = asesorId ? await nombreUsuario(req.user.id) : '';
+      const nombreCargador = await nombreUsuario(req.user.id);
       const historial  = asesorId
-        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaLead, asignadoPor, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1 }])
-        : '[]';
+        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaLead, asignadoPor: nombreCargador, cargadoPor: nombreCargador, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1 }])
+        : JSON.stringify([{ tipo: 'CARGA', cargadoPor: nombreCargador, hora: horaPeruAhora(), fecha: fechaLead, motivo: 'Carga inicial' }]);
 
       const tipifBack = tipifBackInicial;
       const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
