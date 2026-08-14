@@ -437,7 +437,8 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     // audio todavía no está subido.
     let sql = `SELECT v.*, u.nombre as asesor_nombre, u.sala, g.nombre as grabando_por_nombre,
                ph.fecha_programado,
-               ph_prog.estado_prog, ph_prog.usuario_prog, ph_prog.fecha_prog
+               ph_prog.estado_prog, ph_prog.usuario_prog, ph_prog.fecha_prog,
+               COALESCE(LOWER(cv.estado_validacion), 'venta') AS estado_validacion
                FROM ventas v
                LEFT JOIN usuarios u ON v.asesor_id = u.id
                LEFT JOIN usuarios g ON v.grabando_por_id = g.id
@@ -460,15 +461,15 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                  ) h2 ON h1.id = h2.max_id
                ) ph_prog ON ph_prog.venta_id = v.id
                LEFT JOIN (
-                 SELECT vh.venta_id, vh.tipo AS ultimo_tipo_estado
+                 SELECT vh.venta_id, vh.valor_nuevo AS estado_validacion
                  FROM venta_historial vh
                  INNER JOIN (
                    SELECT venta_id, MAX(id) AS max_id
                    FROM venta_historial
-                   WHERE campo = 'estado'
+                   WHERE campo = 'estado' AND tipo = 'CAMBIO_VALIDACION'
                    GROUP BY venta_id
-                 ) lh ON vh.id = lh.max_id
-               ) uh ON uh.venta_id = v.id
+                 ) lcv ON vh.id = lcv.max_id
+               ) cv ON cv.venta_id = v.id
                WHERE 1=1`;
     const params = [];
 
@@ -512,10 +513,6 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                     AND LOWER(v.estado_grab) = 'grabado'
                     AND LOWER(COALESCE(v.estado_supgrab, 'sin_revisar')) = 'aprobado'))`;
       params.push(...ESTADOS_PROGRAMACION);
-    }
-
-    if (cargoEfectivo === 'validacion') {
-      sql += ` AND (uh.venta_id IS NULL OR uh.ultimo_tipo_estado = 'CAMBIO_VALIDACION' OR UPPER(TRIM(v.estado)) = 'VENTA')`;
     }
 
     if (dni)    { sql += ` AND v.dni LIKE ?`;              params.push(`%${dni}%`); }
