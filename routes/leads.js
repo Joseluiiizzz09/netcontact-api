@@ -188,12 +188,18 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
           || String(l.asesor_nombre || '').trim() === visorAsesorNombre.trim();
         if (esTitularVista) {
           const asignacionesVista = historial.filter(h =>
-            h?.asesor && h.tipo !== 'TIPIF_VEND'
+            h?.asesor && !['TIPIF_VEND','TIPIF_BACK','DERIVADO'].includes(String(h.tipo || '').toUpperCase())
             && String(h.asesor).trim() === visorAsesorNombre.trim()
           );
           const asignacionVista = asignacionesVista[asignacionesVista.length - 1];
+          // Compatibilidad con tipificaciones guardadas antes de separar los eventos
+          // de Back de las asignaciones: recupera el valor personal más reciente.
+          const eventoBackVista = [...historial].reverse().find(h =>
+            h?.obsBackPersonal != null
+            && String(h.asesor || '').trim() === visorAsesorNombre.trim()
+          );
           obsAsesorPersonal = asignacionVista?.obsAsesorPersonal ?? obsAsesor;
-          obsBackPersonal = asignacionVista?.obsBackPersonal ?? '';
+          obsBackPersonal = asignacionVista?.obsBackPersonal ?? eventoBackVista?.obsBackPersonal ?? '';
         } else {
           const rotacionVista = [...historial].reverse().find(h =>
             String(h?.asesorAnterior || '').trim() === visorAsesorNombre.trim()
@@ -754,7 +760,10 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       tipifVendAntes: lead.tipif_vend || '',
       obsAsesorAntes: lead.obs_asesor || '',
       obsBackAntes: (() => {
-        const asignaciones = historial.filter(h => h?.asesor && h.tipo !== 'TIPIF_VEND' && String(h.asesor).trim() === String(lead.asesor_nombre || '').trim());
+        const asignaciones = historial.filter(h =>
+          h?.asesor && !['TIPIF_VEND','TIPIF_BACK','DERIVADO'].includes(String(h.tipo || '').toUpperCase())
+          && String(h.asesor).trim() === String(lead.asesor_nombre || '').trim()
+        );
         return asignaciones[asignaciones.length - 1]?.obsBackPersonal || '';
       })(),
       hora,
@@ -889,7 +898,7 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
         const obsBackPersonal = !valorOriginal ? '' : (valorOriginal === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
         for (let i = histArr.length - 1; i >= 0; i--) {
           const h = histArr[i];
-          if (h?.asesor && h.tipo !== 'TIPIF_VEND' && String(h.asesor).trim() === String(lead.asesor_nombre || '').trim()) {
+          if (h?.asesor && !['TIPIF_VEND','TIPIF_BACK','DERIVADO'].includes(String(h.tipo || '').toUpperCase()) && String(h.asesor).trim() === String(lead.asesor_nombre || '').trim()) {
             histArr[i] = { ...h, obsBackPersonal, tipifBackOriginal:valorOriginal, tipifBackSlot:tipif_back_2 !== undefined ? 2 : 1 };
             break;
           }
