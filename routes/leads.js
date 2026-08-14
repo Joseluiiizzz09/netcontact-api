@@ -629,13 +629,14 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
 // Datos descriptivos que Back Office prepara para el asesor.
 router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
   try {
-    const { tipo_contacto, direccion, coordenadas, obs_back, distrito, n1, n2 } = req.body;
+    const { tipo_contacto, direccion, coordenadas, obs_back, distrito, n1, n2, campana } = req.body;
     const errores = validar([
       errorTexto(tipo_contacto, 'tipo_contacto', { max: 20 }),
       errorTexto(direccion, 'direccion', { max: 1000 }),
       errorTexto(coordenadas, 'coordenadas', { max: 255 }),
       errorTexto(obs_back, 'obs_back', { max: 2000 }),
       errorTexto(distrito, 'distrito', { max: 100 }),
+      errorTexto(campana, 'campana', { max: 100 }),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
 
@@ -668,6 +669,7 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
     if (distrito      !== undefined) { campos.push('distrito=?');      valores.push(distrito || ''); }
     if (n1Normalizado !== undefined) { campos.push('n1=?');            valores.push(n1Normalizado); }
     if (n2Normalizado !== undefined) { campos.push('n2=?');            valores.push(n2Normalizado || null); }
+    if (campana       !== undefined) { campos.push('campana=?');       valores.push(String(campana).trim() || '—'); }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'No hay datos para actualizar' });
 
     valores.push(req.params.id);
