@@ -9,7 +9,7 @@ const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositi
 
 const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
 const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz','esperando_tercero','corregir_sec'];
-const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado','programado','conforme','no_conforme'];
+const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado','programado','conforme','no_conforme','audio_subido'];
 const TRAMOS_SEGUIMIENTO_OK = ['AM 1','AM 2','PM 1','PM 2','PM 3'];
 const ESTADOS_VALIDOS_POST  = ['VENTA'];
 const ESTADOS_VALIDOS_PATCH = [
