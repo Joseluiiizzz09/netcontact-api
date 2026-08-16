@@ -85,13 +85,14 @@ function historialArray(valor) {
   try { return JSON.parse(valor || '[]'); } catch { return []; }
 }
 
-// Una rotacion real es un movimiento de asesor, no la carga inicial ni una
-// tipificacion. `reasignadoPor` cubre las reasignaciones hechas desde Base y
-// `ROTACION` las realizadas desde Rotacion inteligente.
+// Cada asignacion real a un asesor cuenta como una rotacion, incluida la
+// asignacion inicial. Se excluyen carga, tipificaciones y eventos auxiliares.
 function contarRotacionesHistorial(valor) {
-  return historialArray(valor).filter(h =>
-    String(h?.tipo || '').trim().toUpperCase() === 'ROTACION' || Boolean(h?.reasignadoPor)
-  ).length;
+  return historialArray(valor).filter(h => {
+    const tipo = String(h?.tipo || '').trim().toUpperCase();
+    return Boolean(String(h?.asesor || '').trim())
+      && !['CARGA', 'TIPIF_VEND', 'TIPIF_BACK', 'DERIVADO'].includes(tipo);
+  }).length;
 }
 
 function esTipificacionOrigen(valor) {
