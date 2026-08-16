@@ -142,6 +142,19 @@ async function existeTipificadoOtraCampana(conn, n1, fecha, campana, excluirId =
   return rows.some(r => resumenTipificadoDia(r, r.historial, fecha).aplica);
 }
 
+async function idLeadMasAntiguoDelDia(conn, n1, fecha) {
+  const numero = normalizarN1(n1);
+  if (!numero || !fecha) return null;
+  const [rows] = await conn.query(`
+    SELECT id FROM leads
+    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+      AND fecha = ?
+    ORDER BY created_at ASC, id ASC
+    LIMIT 1
+  `, [numero, fecha]);
+  return rows[0]?.id || null;
+}
+
 async function bloquearOtrasCampanasDelDia(conn, lead) {
   const n1 = normalizarN1(lead?.n1);
   const fecha = normalizarFechaAsignacion(lead?.fecha) || fechaPeruHoy();
@@ -330,30 +343,22 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         historial,
       };
     });
-    // Los duplicados NO ROTAR comparten visualmente el contador del primer
-    // registro operativo del mismo numero y fecha. El historial real permanece
-    // en el registro principal; aqui solo se proyecta su contador unificado.
-    const principalesPorDia = new Map();
+    // Por numero y dia, solo la caida mas antigua conserva tipificacion. Todas
+    // las posteriores se proyectan como NO ROTAR y comparten su contador.
+    const gruposPorDia = new Map();
     for (const lead of salida) {
       const clave = `${normalizarN1(lead.n1)}|${normalizarFechaAsignacion(lead.fecha)}`;
-      const tipif = normalizarTipifVendLegacy(lead.tipif_vend).trim().toUpperCase();
-      if (tipif === 'NO ROTAR') continue;
-      const actual = principalesPorDia.get(clave);
-      const rotLead = Number(lead.rotaciones || 0);
-      const rotActual = Number(actual?.rotaciones || 0);
-      const asignacionLead = [...historialArray(lead.historial)].reverse().find(h => h?.asesor && !['TIPIF_VEND','TIPIF_BACK','DERIVADO'].includes(String(h.tipo || '').toUpperCase()));
-      const asignacionActual = actual ? [...historialArray(actual.historial)].reverse().find(h => h?.asesor && !['TIPIF_VEND','TIPIF_BACK','DERIVADO'].includes(String(h.tipo || '').toUpperCase())) : null;
-      const marcaLead = `${normalizarFechaAsignacion(asignacionLead?.fecha || lead.fecha)} ${String(asignacionLead?.hora || lead.hora_asig || '').padStart(5,'0')}`;
-      const marcaActual = `${normalizarFechaAsignacion(asignacionActual?.fecha || actual?.fecha)} ${String(asignacionActual?.hora || actual?.hora_asig || '').padStart(5,'0')}`;
-      if (!actual || rotLead > rotActual || (rotLead === rotActual && marcaLead > marcaActual)) {
-        principalesPorDia.set(clave, lead);
-      }
+      if (!gruposPorDia.has(clave)) gruposPorDia.set(clave, []);
+      gruposPorDia.get(clave).push(lead);
     }
-    for (const lead of salida) {
-      if (normalizarTipifVendLegacy(lead.tipif_vend).trim().toUpperCase() !== 'NO ROTAR') continue;
-      const clave = `${normalizarN1(lead.n1)}|${normalizarFechaAsignacion(lead.fecha)}`;
-      const principal = principalesPorDia.get(clave);
-      if (principal) lead.rotaciones = principal.rotaciones;
+    for (const grupo of gruposPorDia.values()) {
+      if (grupo.length < 2) continue;
+      grupo.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || Number(a.id) - Number(b.id));
+      const principal = grupo[0];
+      for (const duplicado of grupo.slice(1)) {
+        duplicado.tipif_vend = 'NO ROTAR';
+        duplicado.rotaciones = principal.rotaciones;
+      }
     }
     const dataFiltrada = fecha && visorAsesorId
       ? salida.filter(l => {
@@ -732,7 +737,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const horaFinal  = asesorId ? horaAhora : '';
       const tipifBackInicial = normalizarTipifBack(l.tipif_back);
       const campanaNormalizada = normalizarCampana(l.campana);
-      const bloquearRotacion = await existeTipificadoOtraCampana(db, n1Normalizado, fechaLead, campanaNormalizada);
+      const bloquearRotacion = Boolean(await idLeadMasAntiguoDelDia(db, n1Normalizado, fechaLead));
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
       const nombreCargador = await nombreUsuario(req.user.id);
       const historial  = asesorId
@@ -966,7 +971,6 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     const lead = rows[0];
-
     if (asesor_nombre) {
       const [ventasCerradas] = await db.query(`SELECT id FROM ventas WHERE TRIM(telefono1)=TRIM(?) LIMIT 1`, [lead.n1 || '']);
       if (ventasCerradas.length) {
@@ -1152,6 +1156,11 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     const lead = rows[0];
+    const idPrincipalDia = await idLeadMasAntiguoDelDia(db, lead.n1, normalizarFechaAsignacion(lead.fecha));
+    if (idPrincipalDia && Number(idPrincipalDia) !== Number(lead.id)) {
+      await db.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaPeruAhora(), lead.id]);
+      return res.status(409).json({ ok:false, tipif_vend:'NO ROTAR', mensaje:'Solo el primer registro del numero en el dia puede recibir tipificacion' });
+    }
     const obsActual = String(lead.obs_asesor || '').trim();
     let obsFinal = documentoTexto && !obsActual.toUpperCase().includes(documentoTexto.toUpperCase())
       ? (obsActual ? `${obsActual} | ${documentoTexto}` : documentoTexto)
