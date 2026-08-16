@@ -308,6 +308,27 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         historial,
       };
     });
+    // Los duplicados NO ROTAR comparten visualmente el contador del primer
+    // registro operativo del mismo numero y fecha. El historial real permanece
+    // en el registro principal; aqui solo se proyecta su contador unificado.
+    const principalesPorDia = new Map();
+    for (const lead of salida) {
+      const clave = `${normalizarN1(lead.n1)}|${normalizarFechaAsignacion(lead.fecha)}`;
+      const tipif = normalizarTipifVendLegacy(lead.tipif_vend).trim().toUpperCase();
+      if (tipif === 'NO ROTAR') continue;
+      const actual = principalesPorDia.get(clave);
+      const creadoLead = new Date(lead.created_at || 0).getTime();
+      const creadoActual = actual ? new Date(actual.created_at || 0).getTime() : Infinity;
+      if (!actual || creadoLead < creadoActual || (creadoLead === creadoActual && Number(lead.id) < Number(actual.id))) {
+        principalesPorDia.set(clave, lead);
+      }
+    }
+    for (const lead of salida) {
+      if (normalizarTipifVendLegacy(lead.tipif_vend).trim().toUpperCase() !== 'NO ROTAR') continue;
+      const clave = `${normalizarN1(lead.n1)}|${normalizarFechaAsignacion(lead.fecha)}`;
+      const principal = principalesPorDia.get(clave);
+      if (principal) lead.rotaciones = principal.rotaciones;
+    }
     const dataFiltrada = fecha && visorAsesorId
       ? salida.filter(l => {
           // Para la base diaria se toma solamente la ultima asignacion
