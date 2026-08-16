@@ -103,6 +103,21 @@ function resumenTipificadoDia(lead, historial, fecha = fechaPeruHoy()) {
   return { aplica: tuvoTipificacion, rotaciones };
 }
 
+function resumenSinCoberturaDia(lead, historial, fecha = fechaPeruHoy()) {
+  const hist = historialArray(historial);
+  const fechaLead = normalizarFechaAsignacion(lead?.fecha);
+  const tuvoSinCobertura = (
+    String(lead?.tipif_vend || '').trim().toUpperCase() === 'SIN COBERTURA'
+    && fechaLead === fecha
+  ) || hist.some(h => normalizarFechaAsignacion(h?.fecha) === fecha && [h?.tipif, h?.tipif_vend, h?.tipifVendAntes]
+    .some(v => String(v || '').trim().toUpperCase() === 'SIN COBERTURA'));
+  const rotaciones = hist.filter(h =>
+    (String(h?.tipo || '').trim().toUpperCase() === 'ROTACION' || Boolean(h?.reasignadoPor))
+    && normalizarFechaAsignacion(h?.fecha) === fecha
+  ).length;
+  return { aplica: tuvoSinCobertura, rotaciones };
+}
+
 async function existeTipificadoOtraCampana(conn, n1, fecha, campana, excluirId = null) {
   const params = [normalizarN1(n1), fecha, normalizarCampana(campana)];
   let excluirSql = '';
@@ -788,10 +803,10 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     }
     const lead = leads[0];
-    const limiteDiario = resumenTipificadoDia(lead, lead.historial);
+    const limiteDiario = resumenSinCoberturaDia(lead, lead.historial);
     if (limiteDiario.aplica && limiteDiario.rotaciones >= 2) {
       await conn.rollback();
-      return res.status(409).json({ ok:false, mensaje:'Este lead permite un maximo de 2 rotaciones por dia' });
+      return res.status(409).json({ ok:false, mensaje:'SIN COBERTURA permite un maximo de 2 rotaciones por dia' });
     }
     if (tipificacionProhibida(lead.tipif_vend)) {
       await conn.rollback();
@@ -958,9 +973,9 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     }
 
     const asesorCambia = !!asesor_nombre && asesor_nombre !== (lead.asesor_nombre || '');
-    const limiteDiario = resumenTipificadoDia(lead, lead.historial);
+    const limiteDiario = resumenSinCoberturaDia(lead, lead.historial);
     if (asesorCambia && limiteDiario.aplica && limiteDiario.rotaciones >= 2) {
-      return res.status(409).json({ ok:false, mensaje:'Este lead permite un maximo de 2 rotaciones por dia' });
+      return res.status(409).json({ ok:false, mensaje:'SIN COBERTURA permite un maximo de 2 rotaciones por dia' });
     }
     let reasignadoPorNombre = '';
     if (asesorCambia) {
