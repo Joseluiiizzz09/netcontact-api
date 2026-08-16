@@ -433,6 +433,18 @@ async function initDB() {
         AND (COALESCE(distrito, '') <> '' OR COALESCE(coordenadas, '') <> '')
     `);
 
+    // Unifica campañas históricas para que CAMP YOPI, CAMP ADRI, etc. se
+    // midan junto con YOPI, ADRI, etc. Solo elimina el prefijo inicial CAMP.
+    const [campanasNormalizadas] = await conn.query(`
+      UPDATE leads
+      SET campana = TRIM(SUBSTRING(TRIM(campana), 6))
+      WHERE UPPER(TRIM(campana)) LIKE 'CAMP %'
+        AND TRIM(SUBSTRING(TRIM(campana), 6)) <> ''
+    `);
+    if (campanasNormalizadas.affectedRows > 0) {
+      console.log(`Campañas históricas normalizadas: ${campanasNormalizadas.affectedRows}`);
+    }
+
     // -- USUARIO ADMIN INICIAL --
     const [rows] = await conn.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);
     if (!rows.length) {

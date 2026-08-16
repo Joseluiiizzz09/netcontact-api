@@ -31,6 +31,14 @@ function normalizarN1(valor) {
   return String(valor || '').replace(/\D+/g, '');
 }
 
+function normalizarCampana(valor) {
+  return String(valor || '')
+    .trim()
+    .replace(/^CAMP\s+/i, '')
+    .trim()
+    .substring(0, 100);
+}
+
 function normalizarFechaAsignacion(valor) {
   const match = String(valor || '').match(/^(\d{4}-\d{2}-\d{2})/);
   return match ? match[1] : '';
@@ -414,7 +422,7 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
         const n2Clean = limpiarN2(l.n2);
 
         const fechaLead  = String(l.fecha || fechaPeruHoy()).substring(0, 10);
-        const campana    = String(l.campana    || '').substring(0, 100);
+        const campana    = normalizarCampana(l.campana);
         const distrito   = String(l.distrito   || '').substring(0, 100);
         const tipifBack  = normalizarTipifBack(l.tipif_back);
         const tipifVend  = normalizarTipifVendLegacy(l.tipif_vend).substring(0, 100);
@@ -605,7 +613,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        l.campana||'', l.distrito||'', l.n1, l.n2||null,
+        normalizarCampana(l.campana), l.distrito||'', l.n1, l.n2||null,
         l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
         registraAutor ? req.user.id : null, derivadoPorNombre,
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, asesorId?1:0
@@ -673,7 +681,7 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
     if (distrito      !== undefined) { campos.push('distrito=?');      valores.push(distrito || ''); }
     if (n1Normalizado !== undefined) { campos.push('n1=?');            valores.push(n1Normalizado); }
     if (n2Normalizado !== undefined) { campos.push('n2=?');            valores.push(n2Normalizado || null); }
-    if (campana       !== undefined) { campos.push('campana=?');       valores.push(String(campana).trim() || '—'); }
+    if (campana       !== undefined) { campos.push('campana=?');       valores.push(normalizarCampana(campana) || '—'); }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'No hay datos para actualizar' });
 
     valores.push(req.params.id);
