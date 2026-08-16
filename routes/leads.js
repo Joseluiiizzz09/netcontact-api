@@ -355,6 +355,18 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       if (grupo.length < 2) continue;
       grupo.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || Number(a.id) - Number(b.id));
       const principal = grupo[0];
+      // Si una version anterior marco por error tambien al principal como
+      // NO ROTAR, recupera su ultima tipificacion real desde el historial.
+      if (normalizarTipifVendLegacy(principal.tipif_vend).trim().toUpperCase() === 'NO ROTAR') {
+        const eventosValidos = historialArray(principal.historial).filter(h =>
+          String(h?.tipo || '').trim().toUpperCase() === 'TIPIF_VEND'
+          && esTipificacionOrigen(h?.tipif)
+        );
+        if (eventosValidos.length) {
+          eventosValidos.sort((a, b) => Number(a?.ts || 0) - Number(b?.ts || 0));
+          principal.tipif_vend = normalizarTipifVendLegacy(eventosValidos[eventosValidos.length - 1].tipif);
+        }
+      }
       for (const duplicado of grupo.slice(1)) {
         duplicado.tipif_vend = 'NO ROTAR';
         duplicado.rotaciones = principal.rotaciones;
