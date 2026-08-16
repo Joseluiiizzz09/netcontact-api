@@ -32,11 +32,13 @@ function normalizarN1(valor) {
 }
 
 function normalizarCampana(valor) {
-  return String(valor || '')
+  const campana = String(valor || '')
     .trim()
     .replace(/^CAMP\s+/i, '')
     .trim()
     .substring(0, 100);
+  if (campana.replace(/^[—–-]+\s*/, '').toUpperCase() === 'K9') return 'K9';
+  return campana;
 }
 
 function normalizarFechaAsignacion(valor) {
@@ -301,7 +303,7 @@ router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
     if (desde && hasta && desde > hasta)
       return res.status(400).json({ ok:false, mensaje:'La fecha Desde no puede ser posterior a Hasta' });
 
-    const campanaSql = `COALESCE(NULLIF(TRIM(CASE WHEN UPPER(TRIM(l.campana)) LIKE 'CAMP %' THEN SUBSTRING(TRIM(l.campana), 6) ELSE TRIM(l.campana) END),''), 'SIN CAMPAÑA')`;
+    const campanaSql = `COALESCE(NULLIF(TRIM(CASE WHEN UPPER(TRIM(l.campana)) IN ('—K9','–K9','-K9') THEN 'K9' WHEN UPPER(TRIM(l.campana)) LIKE 'CAMP %' THEN SUBSTRING(TRIM(l.campana), 6) ELSE TRIM(l.campana) END),''), 'SIN CAMPAÑA')`;
     const tipifSql = `COALESCE(NULLIF(TRIM(l.tipif_vend),''), NULLIF(TRIM(l.tipif_back_2),''), NULLIF(TRIM(l.tipif_back),''), 'SIN TIPIFICAR')`;
     const condiciones = [];
     const params = [];

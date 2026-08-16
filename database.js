@@ -445,6 +445,15 @@ async function initDB() {
       console.log(`Campañas históricas normalizadas: ${campanasNormalizadas.affectedRows}`);
     }
 
+    const [k9Normalizadas] = await conn.query(`
+      UPDATE leads
+      SET campana = 'K9'
+      WHERE UPPER(TRIM(campana)) IN ('—K9', '–K9', '-K9')
+    `);
+    if (k9Normalizadas.affectedRows > 0) {
+      console.log(`Campañas K9 normalizadas: ${k9Normalizadas.affectedRows}`);
+    }
+
     // -- USUARIO ADMIN INICIAL --
     const [rows] = await conn.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);
     if (!rows.length) {
