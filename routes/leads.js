@@ -112,9 +112,6 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
       )`;
       params.push(req.user.id);
-      // P1: leads cerrados definitivamente no aparecen en ninguna base de asesor,
-      // aunque no exista venta formal en la tabla ventas (cierres informales, datos históricos).
-      sql += ` AND UPPER(TRIM(l.tipif_vend)) NOT IN ('VENTA CERRADA','NO TOCAR','SH NO TOCAR','SH NO ROTAR')`;
     } else if (asesor_id) {
       const [uNom] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [asesor_id]);
       const nom = uNom[0]?.nombre || '';
@@ -127,7 +124,6 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
       )`;
       params.push(asesor_id);
-      sql += ` AND UPPER(TRIM(l.tipif_vend)) NOT IN ('VENTA CERRADA','NO TOCAR','SH NO TOCAR','SH NO ROTAR')`;
     }
 
     // Sin visor de asesor la fecha representa la base original. Para la base

@@ -317,11 +317,14 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       const [usuarios] = await conn.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
       nombreAsesor = usuarios[0]?.nombre || nombreAsesor;
       if (leadVenta) {
-        // P2: solo el titular actual puede cerrar la venta. Un ex-asesor con sesión
-        // abierta no puede re-dueñar un lead que ya fue rotado a otra persona.
-        if (Number(leadVenta.asesor_id) !== Number(req.user.id)) {
+        let historial = [];
+        try { historial = JSON.parse(leadVenta.historial || '[]'); } catch { historial = []; }
+        const participo = leadVenta.asesor_id === req.user.id || historial.some(h =>
+          (h?.asesor || '').trim() === nombreAsesor.trim() || (h?.asesorAnterior || '').trim() === nombreAsesor.trim()
+        );
+        if (!participo) {
           await conn.rollback();
-          return res.status(403).json({ ok: false, mensaje: 'Este número fue reasignado a otro asesor. Solo el titular actual puede registrar la venta.' });
+          return res.status(403).json({ ok: false, mensaje: 'No puedes registrar una venta con un número que no trabajaste.' });
         }
       } else {
         const valido = await esTelefonoVentaCerradaHoy(conn, req.user.id, v.telefono1);
@@ -380,14 +383,9 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       }
       const doc = `${v.tipoDoc || 'DNI'}: ${String(v.dni || '').trim()}`;
       const obsFinal = doc;
-      // P3: el UPDATE usa siempre el titular registrado en la BD, no el remitente.
-      // Para cargo asesor, P2 ya garantiza que son la misma persona; esta línea es
-      // defensa de profundidad. Para no-asesor, asesorVentaId ya viene de leadVenta.
-      const asesorIdUpdate = leadVenta.asesor_id ?? asesorVentaId;
-      const asesorNombreUpdate = leadVenta.asesor_nombre || nombreAsesor;
       await conn.query(
         `UPDATE leads SET asesor_id=?, asesor_nombre=?, sin_asignar=0, tipif_vend='VENTA CERRADA', tipif_hora=?, obs_asesor=?, historial=? WHERE id=?`,
-        [asesorIdUpdate, asesorNombreUpdate, hora, obsFinal, JSON.stringify(historial), leadVenta.id]
+        [asesorVentaId, nombreAsesor, hora, obsFinal, JSON.stringify(historial), leadVenta.id]
       );
     }
 
