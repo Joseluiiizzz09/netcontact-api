@@ -196,6 +196,43 @@ function valorHistorial(valor) {
   return String(valor);
 }
 
+function actualizarDocumentoEnTexto(texto, documento) {
+  const actual = String(texto || '').trim();
+  const patron = /\b(?:DNI|CE|RUC)\s*:\s*\d+/gi;
+  if (!documento) return actual.replace(patron, '').replace(/^\s*\|\s*|\s*\|\s*$/g, '').trim();
+  if (patron.test(actual)) return actual.replace(patron, documento);
+  return actual ? `${actual} | ${documento}` : documento;
+}
+
+async function sincronizarDocumentoConBackData(conn, venta, tipoDocNuevo, dniNuevo, telefonoNuevo) {
+  const tipo = String(tipoDocNuevo || venta.tipo_doc || 'DNI').trim().toUpperCase();
+  const numeroDoc = String(dniNuevo ?? venta.dni ?? '').trim();
+  const documento = numeroDoc ? `${tipo}: ${numeroDoc}` : '';
+  const telefonos = [...new Set([venta.telefono1, telefonoNuevo].map(v => String(v || '').replace(/\D/g, '')).filter(Boolean))];
+  if (!telefonos.length) return 0;
+  const condiciones = telefonos.map(() => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1,' ',''),'-',''),'(',''),')',''),'+',''),'.','')=?`).join(' OR ');
+  const [leads] = await conn.query(`SELECT id, obs_asesor, historial FROM leads WHERE ${condiciones} FOR UPDATE`, telefonos);
+  for (const lead of leads) {
+    let historial = [];
+    try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
+    historial = historial.map(item => {
+      if (!item || typeof item !== 'object') return item;
+      const actualizado = { ...item };
+      if (Number(item.ventaId) === Number(venta.id) || item.ventaCompleta === true) actualizado.documento = documento;
+      for (const campo of ['obsAsesorPersonal','obsAsesorAntes']) {
+        if (actualizado[campo] != null) actualizado[campo] = actualizarDocumentoEnTexto(actualizado[campo], documento);
+      }
+      return actualizado;
+    });
+    await conn.query(`UPDATE leads SET obs_asesor=?, historial=? WHERE id=?`, [
+      actualizarDocumentoEnTexto(lead.obs_asesor, documento),
+      JSON.stringify(historial),
+      lead.id,
+    ]);
+  }
+  return leads.length;
+}
+
 async function registrarHistorial(conn, ventaId, actor, evento = {}) {
   if (!actor) throw new Error('No se pudo identificar al usuario que realizó el cambio.');
   await conn.query(`
@@ -1195,8 +1232,12 @@ router.patch('/:id/datos', auth(['supervisor','jefatura','seguimiento','usuarios
     for (const cambio of cambios) {
       await registrarHistorial(conn, ventaId, actor, { ...cambio, tipo: 'ACTUALIZACION' });
     }
+    let leadsSincronizados = 0;
+    if (dni !== undefined || tipoDoc !== undefined) {
+      leadsSincronizados = await sincronizarDocumentoConBackData(conn, venta, tipoDoc, dni, telefono1);
+    }
     await conn.commit();
-    res.json({ ok: true, mensaje: 'Datos de la venta actualizados.' });
+    res.json({ ok: true, leads_sincronizados:leadsSincronizados, mensaje:'Datos de la venta y Back Data actualizados.' });
   } catch (e) {
     await conn.rollback().catch(() => {});
     console.error(e);
