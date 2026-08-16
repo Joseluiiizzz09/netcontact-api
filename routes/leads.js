@@ -322,6 +322,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         const placeholders = phones.map(() => '?').join(',');
         const [ventas] = await db.query(
           `SELECT v.telefono1, v.asesor_id, u.nombre AS asesor_nombre,
+                  v.dni AS venta_documento, v.tipo_doc AS venta_tipo_doc,
                   v.estado, v.estado_grab, v.motivo_seguimiento, v.created_at AS venta_created_at,
                   cv.estado_validacion, cv.fecha_validacion, fechas.fecha_grabacion, fechas.fecha_seguimiento
            FROM ventas v LEFT JOIN usuarios u ON u.id = v.asesor_id
@@ -404,6 +405,8 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         venta_confirmada: ventaConfirmada,
         venta_asesor_id: ventaAsesorId,
         venta_asesor_nombre: ventaAsesorNombre,
+        venta_documento: ventaInfo?.venta_documento || '',
+        venta_tipo_doc: ventaInfo?.venta_tipo_doc || '',
         tipif_interna: tipifInterna?.tipificacion || '',
         tipif_interna_color: tipifInterna?.color || '',
         tipif_interna_area: tipifInterna?.area || '',
