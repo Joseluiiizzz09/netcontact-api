@@ -153,6 +153,20 @@ async function bloquearOtrasCampanasDelDia(conn, lead) {
   `, [horaPeruAhora(), lead.id, n1, fecha, normalizarCampana(lead.campana), creadoEn, creadoEn]);
 }
 
+async function bloquearDuplicadosAlRotar(conn, lead) {
+  const n1 = normalizarN1(lead?.n1);
+  const fecha = normalizarFechaAsignacion(lead?.fecha);
+  if (!n1 || !fecha) return;
+  await conn.query(`
+    UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=?
+    WHERE id<>?
+      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '')=?
+      AND fecha=?
+      AND UPPER(TRIM(campana))<>UPPER(TRIM(?))
+      AND UPPER(TRIM(COALESCE(tipif_vend,''))) NOT IN ('VENTA CERRADA','NO TOCAR','SH NO TOCAR','NO ROTAR','SH NO ROTAR')
+  `, [horaPeruAhora(), lead.id, n1, fecha, normalizarCampana(lead.campana)]);
+}
+
 async function nombreUsuario(id) {
   const [rows] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [id]);
   return rows[0]?.nombre || 'Usuario Back Data';
@@ -317,9 +331,13 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const tipif = normalizarTipifVendLegacy(lead.tipif_vend).trim().toUpperCase();
       if (tipif === 'NO ROTAR') continue;
       const actual = principalesPorDia.get(clave);
-      const creadoLead = new Date(lead.created_at || 0).getTime();
-      const creadoActual = actual ? new Date(actual.created_at || 0).getTime() : Infinity;
-      if (!actual || creadoLead < creadoActual || (creadoLead === creadoActual && Number(lead.id) < Number(actual.id))) {
+      const rotLead = Number(lead.rotaciones || 0);
+      const rotActual = Number(actual?.rotaciones || 0);
+      const asignacionLead = [...historialArray(lead.historial)].reverse().find(h => h?.asesor && !['TIPIF_VEND','TIPIF_BACK','DERIVADO'].includes(String(h.tipo || '').toUpperCase()));
+      const asignacionActual = actual ? [...historialArray(actual.historial)].reverse().find(h => h?.asesor && !['TIPIF_VEND','TIPIF_BACK','DERIVADO'].includes(String(h.tipo || '').toUpperCase())) : null;
+      const marcaLead = `${normalizarFechaAsignacion(asignacionLead?.fecha || lead.fecha)} ${String(asignacionLead?.hora || lead.hora_asig || '').padStart(5,'0')}`;
+      const marcaActual = `${normalizarFechaAsignacion(asignacionActual?.fecha || actual?.fecha)} ${String(asignacionActual?.hora || actual?.hora_asig || '').padStart(5,'0')}`;
+      if (!actual || rotLead > rotActual || (rotLead === rotActual && marcaLead > marcaActual)) {
         principalesPorDia.set(clave, lead);
       }
     }
@@ -911,6 +929,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       WHERE id = ?
     `, [asesorNuevo.id, asesorNuevo.nombre, hora, JSON.stringify(historial), req.params.id]);
 
+    await bloquearDuplicadosAlRotar(conn, lead);
     await conn.commit();
     res.json({ ok: true, id: parseInt(req.params.id), asesor: asesorNuevo.nombre, historial, rotaciones:Number(lead.rotaciones || 0) + 1, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
   } catch (e) {
