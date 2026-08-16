@@ -391,7 +391,6 @@ async function initDB() {
       ['idx_venta_asignaciones_venta', 'venta_asignaciones', 'venta_id, created_at'],
       ['idx_venta_historial_venta', 'venta_historial', 'venta_id, created_at'],
       ['idx_vh_validacion', 'venta_historial', 'campo, tipo, venta_id, id'],
-      ['idx_vh_programado', 'venta_historial', 'campo, valor_nuevo, venta_id, created_at'],
     ];
     for (const [nombre, tabla, columnas] of indices) {
       const [[existe]] = await conn.query(`
