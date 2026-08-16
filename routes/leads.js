@@ -442,10 +442,6 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       for (const duplicado of grupo.slice(1)) {
         duplicado.tipif_vend = 'NO ROTAR';
         duplicado.rotaciones = principal.rotaciones;
-        duplicado.tipif_interna = '';
-        duplicado.tipif_interna_color = '';
-        duplicado.tipif_interna_area = '';
-        duplicado.tipif_interna_fecha = '';
       }
     }
     const dataFiltrada = fecha && visorAsesorId
