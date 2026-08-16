@@ -128,6 +128,7 @@ async function bloquearOtrasCampanasDelDia(conn, lead) {
       AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
       AND fecha = ?
       AND UPPER(TRIM(campana)) <> UPPER(TRIM(?))
+      AND UPPER(TRIM(COALESCE(tipif_vend,''))) NOT IN ('VENTA CERRADA','NO TOCAR','SH NO TOCAR','NO ROTAR','SH NO ROTAR')
       AND (? IS NULL OR created_at > ?)
   `, [horaPeruAhora(), lead.id, n1, fecha, normalizarCampana(lead.campana), creadoEn, creadoEn]);
 }
