@@ -76,6 +76,7 @@ function normalizarTipifVendLegacy(valor) {
   const u = v.toUpperCase();
   if (u === 'SH INSTALADO') return 'INSTALADO';
   if (u === 'SH NO ROTAR') return 'NO ROTAR';
+  if (u === 'SH NO TOCAR') return 'NO ROTAR';
   return v;
 }
 
