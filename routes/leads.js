@@ -218,6 +218,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       }
       return {
         ...l,
+        campana: normalizarCampana(l.campana) || l.campana,
         rotaciones: rotacionesReales,
         venta_confirmada: ventaConfirmada,
         venta_asesor_id: ventaAsesorId,
@@ -300,27 +301,28 @@ router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
     if (desde && hasta && desde > hasta)
       return res.status(400).json({ ok:false, mensaje:'La fecha Desde no puede ser posterior a Hasta' });
 
+    const campanaSql = `COALESCE(NULLIF(TRIM(CASE WHEN UPPER(TRIM(l.campana)) LIKE 'CAMP %' THEN SUBSTRING(TRIM(l.campana), 6) ELSE TRIM(l.campana) END),''), 'SIN CAMPAÑA')`;
     const tipifSql = `COALESCE(NULLIF(TRIM(l.tipif_vend),''), NULLIF(TRIM(l.tipif_back_2),''), NULLIF(TRIM(l.tipif_back),''), 'SIN TIPIFICAR')`;
     const condiciones = [];
     const params = [];
     if (desde) { condiciones.push('DATE(l.created_at) >= ?'); params.push(desde); }
     if (hasta) { condiciones.push('DATE(l.created_at) <= ?'); params.push(hasta); }
-    if (campana) { condiciones.push("COALESCE(NULLIF(TRIM(l.campana),''), 'SIN CAMPAÑA') = ?"); params.push(campana); }
+    if (campana) { condiciones.push(`${campanaSql} = ?`); params.push(normalizarCampana(campana) || campana); }
     if (tipificacion) { condiciones.push(`${tipifSql} = ?`); params.push(tipificacion); }
     const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
 
     const [filas] = await db.query(`
-      SELECT COALESCE(NULLIF(TRIM(l.campana),''), 'SIN CAMPAÑA') AS campana,
+      SELECT ${campanaSql} AS campana,
              ${tipifSql} AS tipificacion,
              COUNT(*) AS cantidad,
              MIN(l.created_at) AS primera_alta,
              MAX(l.created_at) AS ultima_alta
       FROM leads l
       ${where}
-      GROUP BY COALESCE(NULLIF(TRIM(l.campana),''), 'SIN CAMPAÑA'), ${tipifSql}
+      GROUP BY ${campanaSql}, ${tipifSql}
       ORDER BY cantidad DESC, campana ASC, tipificacion ASC
     `, params);
-    const [campanas] = await db.query(`SELECT DISTINCT COALESCE(NULLIF(TRIM(campana),''), 'SIN CAMPAÑA') campana FROM leads ORDER BY campana`);
+    const [campanas] = await db.query(`SELECT DISTINCT ${campanaSql} campana FROM leads l ORDER BY campana`);
     const [tipificaciones] = await db.query(`SELECT DISTINCT ${tipifSql} tipificacion FROM leads l ORDER BY tipificacion`);
     res.json({
       ok:true,
@@ -371,7 +373,7 @@ router.get('/avance-asesor', auth(ROLES_BO), async (req, res) => {
       const observacion = asignacion?.obsAsesorPersonal ?? rotacion?.obsAsesorAntes ?? (esTitularEnFecha ? lead.obs_asesor : '') ?? '';
       const obsBack = asignacion?.obsBackPersonal ?? rotacion?.obsBackAntes ?? '';
       data.push({
-        id:lead.id, n1:lead.n1, n2:lead.n2, distrito:lead.distrito, campana:lead.campana,
+        id:lead.id, n1:lead.n1, n2:lead.n2, distrito:lead.distrito, campana:normalizarCampana(lead.campana) || lead.campana,
         hora_asig:asignacion?.hora || (esTitularEnFecha ? lead.hora_asig : '') || '',
         tipif_vend:tipificacion,
         tipif_hora:evento?.hora || (esTitularEnFecha ? lead.tipif_hora : '') || '',
