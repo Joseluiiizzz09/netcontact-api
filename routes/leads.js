@@ -10,7 +10,7 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
 // Sólo estos estados cierran definitivamente el flujo de asignación/rotación.
-const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'NO TOCAR', 'SH NO TOCAR', 'SH NO ROTAR']);
+const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'NO TOCAR', 'SH NO TOCAR', 'NO ROTAR', 'SH NO ROTAR']);
 
 function tipificacionProhibida(valor) {
   return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
@@ -75,7 +75,61 @@ function normalizarTipifVendLegacy(valor) {
   const v = String(valor || '').trim();
   const u = v.toUpperCase();
   if (u === 'SH INSTALADO') return 'INSTALADO';
+  if (u === 'SH NO ROTAR') return 'NO ROTAR';
   return v;
+}
+
+function historialArray(valor) {
+  if (Array.isArray(valor)) return valor;
+  try { return JSON.parse(valor || '[]'); } catch { return []; }
+}
+
+function resumenSinCoberturaDia(lead, historial, fecha = fechaPeruHoy()) {
+  const hist = historialArray(historial);
+  const tipifActual = normalizarTipifVendLegacy(lead?.tipif_vend).toUpperCase();
+  const fechaLead = normalizarFechaAsignacion(lead?.fecha);
+  const tuvoSinCobertura = (tipifActual === 'SIN COBERTURA' && fechaLead === fecha)
+    || hist.some(h => normalizarFechaAsignacion(h?.fecha) === fecha && [h?.tipif, h?.tipif_vend, h?.tipifVendAntes]
+      .some(v => String(v || '').trim().toUpperCase() === 'SIN COBERTURA'));
+  const rotaciones = hist.filter(h =>
+    (String(h?.tipo || '').trim().toUpperCase() === 'ROTACION' || Boolean(h?.reasignadoPor))
+    && normalizarFechaAsignacion(h?.fecha) === fecha
+  ).length;
+  return { aplica: tuvoSinCobertura, rotaciones };
+}
+
+async function existeSinCoberturaOtraCampana(conn, n1, fecha, campana, excluirId = null) {
+  const params = [normalizarN1(n1), fecha, normalizarCampana(campana)];
+  let excluirSql = '';
+  if (excluirId) { excluirSql = ' AND id <> ?'; params.push(excluirId); }
+  const [rows] = await conn.query(`
+    SELECT id, fecha, tipif_vend, historial
+    FROM leads
+    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+      AND fecha = ?
+      AND UPPER(TRIM(campana)) <> UPPER(TRIM(?))${excluirSql}
+  `, params);
+  return rows.some(r => resumenSinCoberturaDia(r, r.historial, fecha).aplica);
+}
+
+async function bloquearOtrasCampanasDelDia(conn, lead) {
+  const n1 = normalizarN1(lead?.n1);
+  const fecha = normalizarFechaAsignacion(lead?.fecha) || fechaPeruHoy();
+  if (!n1 || !fecha) return;
+  let creadoEn = lead?.created_at || null;
+  if (!creadoEn && lead?.id) {
+    const [origen] = await conn.query(`SELECT created_at FROM leads WHERE id=? LIMIT 1`, [lead.id]);
+    creadoEn = origen[0]?.created_at || null;
+  }
+  await conn.query(`
+    UPDATE leads
+    SET tipif_vend = 'NO ROTAR', tipif_hora = ?
+    WHERE id <> ?
+      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+      AND fecha = ?
+      AND UPPER(TRIM(campana)) <> UPPER(TRIM(?))
+      AND (? IS NULL OR created_at > ?)
+  `, [horaPeruAhora(), lead.id, n1, fecha, normalizarCampana(lead.campana), creadoEn, creadoEn]);
 }
 
 async function nombreUsuario(id) {
@@ -221,6 +275,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       return {
         ...l,
         campana: normalizarCampana(l.campana) || l.campana,
+        tipif_vend: normalizarTipifVendLegacy(l.tipif_vend),
         rotaciones: rotacionesReales,
         venta_confirmada: ventaConfirmada,
         venta_asesor_id: ventaAsesorId,
@@ -429,7 +484,8 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
         const campana    = normalizarCampana(l.campana);
         const distrito   = String(l.distrito   || '').substring(0, 100);
         const tipifBack  = normalizarTipifBack(l.tipif_back);
-        const tipifVend  = normalizarTipifVendLegacy(l.tipif_vend).substring(0, 100);
+        let tipifVend  = normalizarTipifVendLegacy(l.tipif_vend).substring(0, 100);
+        if (await existeSinCoberturaOtraCampana(conn, n1Raw, fechaLead, campana)) tipifVend = 'NO ROTAR';
         const hora       = String(l.hora       || '').trim().substring(0, 10);
         const obsAsesor  = String(l.comentario || '').trim().substring(0, 2000) || null;
 
@@ -506,6 +562,9 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
             [campana, distrito, n1Raw, n2Clean, tipifBack, asesorId, asesorNombre, fechaLead, hora, sinAsignar, tipifVend, hora, JSON.stringify(historialArray), rotaciones, obsAsesor]
           );
           creados++;
+          if (tipifVend.toUpperCase() === 'SIN COBERTURA') {
+            await bloquearOtrasCampanasDelDia(conn, { id:result.insertId, n1:n1Raw, fecha:fechaLead, campana });
+          }
         }
       } catch (recordErr) {
         console.error(`[import-legacy] Error en fila ${idx + 1}:`, recordErr.message);
@@ -604,6 +663,8 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
 
       const horaFinal  = asesorId ? horaAhora : '';
       const tipifBackInicial = normalizarTipifBack(l.tipif_back);
+      const campanaNormalizada = normalizarCampana(l.campana);
+      const bloquearRotacion = await existeSinCoberturaOtraCampana(db, n1Normalizado, fechaLead, campanaNormalizada);
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
       const nombreCargador = await nombreUsuario(req.user.id);
       const historial  = asesorId
@@ -617,12 +678,15 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        normalizarCampana(l.campana), l.distrito||'', l.n1, l.n2||null,
+        campanaNormalizada, l.distrito||'', l.n1, l.n2||null,
         l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
         registraAutor ? req.user.id : null, derivadoPorNombre,
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, asesorId?1:0
       ]);
       ids.push(result.insertId);
+      if (bloquearRotacion) {
+        await db.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaAhora, result.insertId]);
+      }
       fechasUsadas.push(fechaLead);
       creados++;
     }
@@ -718,6 +782,11 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     }
     const lead = leads[0];
+    const limiteSinCobertura = resumenSinCoberturaDia(lead, lead.historial);
+    if (limiteSinCobertura.aplica && limiteSinCobertura.rotaciones >= 2) {
+      await conn.rollback();
+      return res.status(409).json({ ok:false, mensaje:'SIN COBERTURA permite un maximo de 2 rotaciones por dia' });
+    }
     if (tipificacionProhibida(lead.tipif_vend)) {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: `Numero prohibido: ${String(lead.tipif_vend).toUpperCase()}` });
@@ -883,6 +952,10 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     }
 
     const asesorCambia = !!asesor_nombre && asesor_nombre !== (lead.asesor_nombre || '');
+    const limiteSinCobertura = resumenSinCoberturaDia(lead, lead.historial);
+    if (asesorCambia && limiteSinCobertura.aplica && limiteSinCobertura.rotaciones >= 2) {
+      return res.status(409).json({ ok:false, mensaje:'SIN COBERTURA permite un maximo de 2 rotaciones por dia' });
+    }
     let reasignadoPorNombre = '';
     if (asesorCambia) {
       reasignadoPorNombre = await nombreUsuario(req.user.id);
@@ -985,7 +1058,7 @@ function registrarTipifEvent(historial, asesor, tipif, datos = {}) {
 router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
   try {
     const { tipif_vend, tipo_doc, documento, distrito, coordenadas } = req.body;
-    const tipifNormalizada = String(tipif_vend || '').trim().toUpperCase();
+    const tipifNormalizada = normalizarTipifVendLegacy(tipif_vend).trim().toUpperCase();
     if (tipif_vend && String(tipif_vend).length > 200)
       return res.status(400).json({ ok: false, mensaje: 'tipif_vend no puede superar 200 caracteres' });
     let documentoTexto = '';
@@ -1032,9 +1105,10 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // Titular actual, o cargos de gestión (backoffice, etc.): actualiza la tipif vigente
     // del titular + registra el evento (con ts) a nombre del titular actual.
     if (!esAsesor || esActual) {
-      registrarTipifEvent(historial, lead.asesor_nombre || '', tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
+      registrarTipifEvent(historial, lead.asesor_nombre || '', tipifNormalizada, documentoTexto ? { documento:documentoTexto } : {});
       await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
-        [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+        [tipifNormalizada, horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+      if (tipifNormalizada === 'SIN COBERTURA') await bloquearOtrasCampanasDelDia(db, lead);
       return res.json({ ok: true, mensaje: 'Tipificación guardada' });
     }
 
@@ -1052,9 +1126,10 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
         if (h && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND') { ultimaAsig = h; break; }
       }
       if (ultimaAsig && (ultimaAsig.asesor || '').trim() === miNombre) {
-        registrarTipifEvent(historial, miNombre, tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
+        registrarTipifEvent(historial, miNombre, tipifNormalizada, documentoTexto ? { documento:documentoTexto } : {});
         await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
-          [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+          [tipifNormalizada, horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+        if (tipifNormalizada === 'SIN COBERTURA') await bloquearOtrasCampanasDelDia(db, lead);
         return res.json({ ok: true, mensaje: 'Tipificación guardada' });
       }
     }
@@ -1069,11 +1144,12 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       return res.status(409).json({ ok: false, mensaje: `Tu tipificación está protegida (${previa}) y no se puede cambiar` });
     // El asesor previo SÍ puede finalizar (VENTA CERRADA / SIN COBERTURA) si recontactó
     // al cliente; la base tomará esa como la más reciente.
-    historial[idx].tipifVendAntes = tipif_vend || '';
+    historial[idx].tipifVendAntes = tipifNormalizada;
     if (documentoTexto) historial[idx].documento = documentoTexto;
-    registrarTipifEvent(historial, miNombre, tipif_vend || '', documentoTexto ? { documento:documentoTexto } : {});
+    registrarTipifEvent(historial, miNombre, tipifNormalizada, documentoTexto ? { documento:documentoTexto } : {});
     await db.query(`UPDATE leads SET historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
       [JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
+    if (tipifNormalizada === 'SIN COBERTURA') await bloquearOtrasCampanasDelDia(db, lead);
     res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al guardar tipificación' });
