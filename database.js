@@ -377,16 +377,21 @@ async function initDB() {
       ['idx_ventas_asesor', 'ventas', 'asesor_id'],
       ['idx_ventas_estado', 'ventas', 'estado'],
       ['idx_ventas_dni', 'ventas', 'dni'],
+      ['idx_ventas_telefono_id', 'ventas', 'telefono1, id'],
       ['idx_ventas_grab', 'ventas', 'estado_grab'],
       ['idx_ventas_supgrab', 'ventas', 'estado_supgrab'],
       ['idx_leads_fecha', 'leads', 'fecha'],
       ['idx_leads_asesor', 'leads', 'asesor_id'],
       ['idx_leads_created', 'leads', 'created_at'],
       ['idx_leads_n1', 'leads', 'n1'],
+      ['idx_leads_fecha_created', 'leads', 'fecha, created_at'],
+      ['idx_leads_fecha_n1', 'leads', 'fecha, n1'],
       ['idx_frases_created', 'frases', 'created_at'],
       ['idx_fotos_venta', 'venta_fotos', 'venta_id'],
       ['idx_venta_asignaciones_venta', 'venta_asignaciones', 'venta_id, created_at'],
       ['idx_venta_historial_venta', 'venta_historial', 'venta_id, created_at'],
+      ['idx_vh_validacion', 'venta_historial', 'campo, tipo, venta_id, id'],
+      ['idx_vh_programado', 'venta_historial', 'campo, valor_nuevo, venta_id, created_at'],
     ];
     for (const [nombre, tabla, columnas] of indices) {
       const [[existe]] = await conn.query(`

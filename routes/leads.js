@@ -472,6 +472,22 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
   }
 });
 
+// Fechas disponibles para navegar la base sin descargar todos los leads.
+router.get('/fechas', auth(ROLES_ALL), async (_req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT DATE_FORMAT(fecha, '%Y-%m-%d') AS fecha, COUNT(*) AS cantidad
+      FROM leads
+      GROUP BY fecha
+      ORDER BY fecha DESC
+    `);
+    res.json({ ok:true, data:rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, mensaje:'Error al obtener fechas de leads' });
+  }
+});
+
 // GET /api/leads/ventas-cerradas
 // Retorna los números del asesor autenticado con tipif_vend = 'VENTA CERRADA' para hoy (Perú).
 router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (req, res) => {
