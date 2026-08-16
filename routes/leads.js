@@ -286,17 +286,22 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       )`;
       params.push(req.user.id);
     } else if (asesor_id) {
-      const [uNom] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [asesor_id]);
+      const [uNom] = await db.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [asesor_id]);
       const nom = uNom[0]?.nombre || '';
-      visorAsesorId = Number(asesor_id);
-      visorAsesorNombre = nom;
-      sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"asesor":"', ?, '"%'))`;
-      params.push(asesor_id, nom);
-      sql += ` AND (
-        NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
-        OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
-      )`;
-      params.push(asesor_id);
+      // Jefatura también puede abrir la vista de un usuario de Back Data. Ese
+      // usuario administra la base completa y no debe tratarse como asesor
+      // asignado, porque hacerlo deja la jornada artificialmente en cero.
+      if (String(uNom[0]?.cargo || '').trim().toLowerCase() === 'asesor') {
+        visorAsesorId = Number(asesor_id);
+        visorAsesorNombre = nom;
+        sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"asesor":"', ?, '"%'))`;
+        params.push(asesor_id, nom);
+        sql += ` AND (
+          NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
+          OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
+        )`;
+        params.push(asesor_id);
+      }
     }
 
     // Sin visor de asesor la fecha representa la base original. Para la base
