@@ -80,6 +80,57 @@ function normalizarTipifVendLegacy(valor) {
   return v;
 }
 
+function normalizarEstadoCRM(valor) {
+  return String(valor || '').trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/_/g, ' ').replace(/\s+/g, ' ');
+}
+
+const TIPI_INTERNA_SEGUIMIENTO = new Map([
+  ['EN EJECUCION', ['VENTA CERRADA', '#2563eb']],
+  ['DERIVADO PLANTA EXTERNA', ['VENTA CERRADA', '#2563eb']],
+  ['DERIVADO A PLANTA EXTERNA', ['VENTA CERRADA', '#2563eb']],
+  ['LEVANTAR SOT', ['VENTA CERRADA', '#2563eb']],
+  ['TECNICOS EN CAMINO', ['VENTA CERRADA', '#2563eb']],
+  ['TECNICOS CAMINO', ['VENTA CERRADA', '#2563eb']],
+  ['TECNICOS EN CASA', ['VENTA CERRADA', '#2563eb']],
+  ['TECNICO CASA', ['VENTA CERRADA', '#2563eb']],
+  ['INSTALADO', ['INSTALADO', '#0369a1']],
+  ['INSTALADO NO VALIDADO', ['INSTALADO', '#0369a1']],
+  ['REASIGNACION', ['INSTALADO', '#0369a1']],
+  ['CAIDA', ['VENTA CAIDA', '#a64d79']],
+  ['RECHAZO', ['VENTA CAIDA', '#a64d79']],
+  ['RECHAZO CAMPO', ['VENTA CAIDA', '#a64d79']],
+  ['RECHAZO EN CAMPO', ['VENTA CAIDA', '#a64d79']],
+  ['RECHAZO MESA', ['VENTA CAIDA', '#a64d79']],
+  ['RECHAZO EN MESA', ['VENTA CAIDA', '#a64d79']],
+  ['SERVICIO ACTIVO', ['VENTA CAIDA', '#a64d79']],
+]);
+const TIPI_INTERNA_VALIDACION = new Map([
+  ...['CORTA LLAMADA','BUZON DE VOZ','CORREGIR','FRAUDE','MALA OFERTA','NO CONTESTA','NO DESEA','SERVICIO ACTIVO'].map(v => [v, ['VENTA CAIDA', '#a64d79']]),
+  ['VALIDADO', ['VENTA CERRADA', '#2563eb']],
+  ['VENTA', ['VENTA CERRADA', '#2563eb']],
+]);
+const TIPI_INTERNA_GRABACION = new Map([
+  ...['PENDIENTE','BUZON DE VOZ','BUZON','CORREGIR SEC','CORTA LLAMADA','ESPERANDO TERCERO','NO CONTESTA','NO DESEA','SUPLANTACION'].map(v => [v, ['VENTA CAIDA', '#a64d79']]),
+  ['GRABADO', ['VENTA CERRADA', '#2563eb']],
+  ['GRABANDO', ['VENTA CERRADA', '#2563eb']],
+]);
+
+function tipificacionInternaVenta(venta) {
+  if (!venta) return null;
+  const candidatos = [];
+  const agregar = (mapa, valor, fecha, area, prioridad) => {
+    const regla = mapa.get(normalizarEstadoCRM(valor));
+    if (regla) candidatos.push({ tipificacion:regla[0], color:regla[1], fecha:fecha || venta.venta_created_at || '', area, prioridad });
+  };
+  const estadoGeneral = normalizarEstadoCRM(venta.estado);
+  const estadoValidacion = venta.estado_validacion || (['VENTA','VALIDADO'].includes(estadoGeneral) ? estadoGeneral : '');
+  agregar(TIPI_INTERNA_VALIDACION, estadoValidacion, venta.fecha_validacion, 'VALIDACION', 1);
+  agregar(TIPI_INTERNA_GRABACION, venta.estado_grab, venta.fecha_grabacion, 'GRABACION', 2);
+  agregar(TIPI_INTERNA_SEGUIMIENTO, venta.estado, venta.fecha_seguimiento, 'SEGUIMIENTO', 3);
+  candidatos.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.prioridad - b.prioridad);
+  return candidatos[candidatos.length - 1] || null;
+}
+
 function historialArray(valor) {
   if (Array.isArray(valor)) return valor;
   try { return JSON.parse(valor || '[]'); } catch { return []; }
@@ -270,14 +321,30 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       if (phones.length > 0) {
         const placeholders = phones.map(() => '?').join(',');
         const [ventas] = await db.query(
-          `SELECT v.telefono1, v.asesor_id, u.nombre AS asesor_nombre
+          `SELECT v.telefono1, v.asesor_id, u.nombre AS asesor_nombre,
+                  v.estado, v.estado_grab, v.motivo_seguimiento, v.created_at AS venta_created_at,
+                  cv.estado_validacion, cv.fecha_validacion, fechas.fecha_grabacion, fechas.fecha_seguimiento
            FROM ventas v LEFT JOIN usuarios u ON u.id = v.asesor_id
+           LEFT JOIN (
+             SELECT vh.venta_id, vh.valor_nuevo AS estado_validacion, vh.created_at AS fecha_validacion
+             FROM venta_historial vh
+             INNER JOIN (
+               SELECT venta_id, MAX(id) AS max_id FROM venta_historial
+               WHERE campo='estado' AND tipo='CAMBIO_VALIDACION' GROUP BY venta_id
+             ) ult ON ult.max_id=vh.id
+           ) cv ON cv.venta_id=v.id
+           LEFT JOIN (
+             SELECT venta_id,
+                    MAX(CASE WHEN campo='estado_grab' THEN created_at END) AS fecha_grabacion,
+                    MAX(CASE WHEN modulo='Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento') THEN created_at END) AS fecha_seguimiento
+             FROM venta_historial GROUP BY venta_id
+           ) fechas ON fechas.venta_id=v.id
            WHERE TRIM(v.telefono1) IN (${placeholders})
              AND v.id IN (SELECT MAX(id) FROM ventas GROUP BY TRIM(telefono1))`,
           phones
         );
         for (const vv of ventas) {
-          ventaMap.set((vv.telefono1 || '').trim(), { venta_asesor_id: vv.asesor_id, venta_asesor_nombre: vv.asesor_nombre });
+          ventaMap.set((vv.telefono1 || '').trim(), { ...vv, venta_asesor_id: vv.asesor_id, venta_asesor_nombre: vv.asesor_nombre });
         }
       }
     }
@@ -301,6 +368,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const ventaAsesorId = ventaInfo?.venta_asesor_id ?? null;
       const ventaAsesorNombre = ventaInfo?.venta_asesor_nombre ?? null;
       const ventaCerrada = ventaConfirmada === 1 && ventaAsesorId;
+      const tipifInterna = tipificacionInternaVenta(ventaInfo);
       let obsAsesorPersonal = obsAsesor;
       let obsBackPersonal = l.obs_back || '';
       if (visorAsesorId && visorAsesorNombre) {
@@ -336,6 +404,10 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         venta_confirmada: ventaConfirmada,
         venta_asesor_id: ventaAsesorId,
         venta_asesor_nombre: ventaAsesorNombre,
+        tipif_interna: tipifInterna?.tipificacion || '',
+        tipif_interna_color: tipifInterna?.color || '',
+        tipif_interna_area: tipifInterna?.area || '',
+        tipif_interna_fecha: tipifInterna?.fecha || '',
         ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
         obs_asesor_personal: obsAsesorPersonal,
@@ -370,6 +442,10 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       for (const duplicado of grupo.slice(1)) {
         duplicado.tipif_vend = 'NO ROTAR';
         duplicado.rotaciones = principal.rotaciones;
+        duplicado.tipif_interna = '';
+        duplicado.tipif_interna_color = '';
+        duplicado.tipif_interna_area = '';
+        duplicado.tipif_interna_fecha = '';
       }
     }
     const dataFiltrada = fecha && visorAsesorId
@@ -1181,6 +1257,28 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       obsFinal = String(coordenadas || '').trim();
     }
     const esAsesor = req.user.cargo === 'asesor';
+    if (esAsesor) {
+      const [ventasCRM] = await db.query(`
+        SELECT v.estado, v.estado_grab, v.created_at AS venta_created_at,
+               cv.estado_validacion, cv.fecha_validacion, fechas.fecha_grabacion, fechas.fecha_seguimiento
+        FROM ventas v
+        LEFT JOIN (
+          SELECT vh.venta_id, vh.valor_nuevo AS estado_validacion, vh.created_at AS fecha_validacion
+          FROM venta_historial vh
+          INNER JOIN (SELECT venta_id, MAX(id) max_id FROM venta_historial WHERE campo='estado' AND tipo='CAMBIO_VALIDACION' GROUP BY venta_id) ult ON ult.max_id=vh.id
+        ) cv ON cv.venta_id=v.id
+        LEFT JOIN (
+          SELECT venta_id,
+                 MAX(CASE WHEN campo='estado_grab' THEN created_at END) fecha_grabacion,
+                 MAX(CASE WHEN modulo='Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento') THEN created_at END) fecha_seguimiento
+          FROM venta_historial GROUP BY venta_id
+        ) fechas ON fechas.venta_id=v.id
+        WHERE TRIM(v.telefono1)=TRIM(?) ORDER BY v.id DESC LIMIT 1
+      `, [lead.n1 || '']);
+      if (tipificacionInternaVenta(ventasCRM[0])) {
+        return res.status(409).json({ ok:false, mensaje:'Este lead tiene una tipificacion interna exclusiva actualizada por el CRM' });
+      }
+    }
     if (esAsesor && String(tipif_vend || '').trim().toUpperCase() === 'INSTALADO')
       return res.status(403).json({ ok: false, mensaje: 'La tipificación INSTALADO es exclusiva de Back Data' });
     // Obtener nombre propio antes del check para cubrir el caso asesor_id=null pero asesor_nombre coincide.
