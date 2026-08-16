@@ -85,6 +85,15 @@ function historialArray(valor) {
   try { return JSON.parse(valor || '[]'); } catch { return []; }
 }
 
+// Una rotacion real es un movimiento de asesor, no la carga inicial ni una
+// tipificacion. `reasignadoPor` cubre las reasignaciones hechas desde Base y
+// `ROTACION` las realizadas desde Rotacion inteligente.
+function contarRotacionesHistorial(valor) {
+  return historialArray(valor).filter(h =>
+    String(h?.tipo || '').trim().toUpperCase() === 'ROTACION' || Boolean(h?.reasignadoPor)
+  ).length;
+}
+
 function esTipificacionOrigen(valor) {
   const tipif = normalizarTipifVendLegacy(valor).trim().toUpperCase();
   return Boolean(tipif) && !['NUEVO', 'NO ROTAR'].includes(tipif);
@@ -261,9 +270,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
 
     const salida = data.map(l => {
       const historial = (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })();
-      const rotacionesHistorial = historial.filter(h => String(h?.tipo || '').toUpperCase() === 'ROTACION').length;
-      const asignacionesHistorial = historial.filter(h => h?.asesor && String(h?.tipo || '').toUpperCase() !== 'TIPIF_VEND').length;
-      const rotacionesReales = Math.max(Number(l.rotaciones || 0), rotacionesHistorial, Math.max(0, asignacionesHistorial - 1));
+      const rotacionesReales = contarRotacionesHistorial(historial);
       let obsAsesor = l.obs_asesor || '';
       const documentoEnObs = obsAsesor.match(/\b(DNI|CE|RUC)\s*:\s*\d+/i)?.[0] || '';
       if (visorAsesorId && visorAsesorNombre && documentoEnObs) {
@@ -919,19 +926,20 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     });
 
     // Actualiza el registro existente: no crea duplicados.
+    const rotacionesReales = contarRotacionesHistorial(historial);
     await conn.query(`
       UPDATE leads SET
         asesor_id = ?, asesor_nombre = ?,
         hora_asig = ?, sin_asignar = 0,
-        rotaciones = rotaciones + 1,
+        rotaciones = ?,
         tipif_vend = '', tipif_hora = '', obs_asesor = '',
         historial = ?
       WHERE id = ?
-    `, [asesorNuevo.id, asesorNuevo.nombre, hora, JSON.stringify(historial), req.params.id]);
+    `, [asesorNuevo.id, asesorNuevo.nombre, hora, rotacionesReales, JSON.stringify(historial), req.params.id]);
 
     await bloquearDuplicadosAlRotar(conn, lead);
     await conn.commit();
-    res.json({ ok: true, id: parseInt(req.params.id), asesor: asesorNuevo.nombre, historial, rotaciones:Number(lead.rotaciones || 0) + 1, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
+    res.json({ ok: true, id: parseInt(req.params.id), asesor: asesorNuevo.nombre, historial, rotaciones:rotacionesReales, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
   } catch (e) {
     if (conn) await conn.rollback().catch(() => {});
     console.error(e);
@@ -1078,22 +1086,23 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     const sqlExtra = asesorCambia ? ', tipif_vend=?, tipif_hora=?, obs_asesor=?' : '';
     const paramsExtra = asesorCambia ? ['', '', ''] : [];
 
+    const rotacionesReales = contarRotacionesHistorial(historialJSON);
     await db.query(`
       UPDATE leads SET asesor_id=?, asesor_nombre=?, tipif_back=?, tipif_back_2=?, hora_asig=?,
-        sin_asignar=?, historial=?, rotaciones=rotaciones+?,
+        sin_asignar=?, historial=?, rotaciones=?,
         derivado_por_id=?, derivado_por_nombre=?, derivado_por_2_id=?, derivado_por_2_nombre=?${sqlExtra}
       WHERE id=?
     `, [
       asesorId, asesorNombreReal, tipifBackReal, tipifBack2Real,
       horaReal, asesorId?0:1, historialJSON,
-      asesorCambia ? 1 : 0,
+      rotacionesReales,
       derivadoPorId, derivadoPorNombre,
       derivadoPor2Id, derivadoPor2Nombre,
       ...paramsExtra,
       req.params.id
     ]);
 
-    res.json({ ok: true, rotaciones:Number(lead.rotaciones || 0) + (asesorCambia ? 1 : 0), mensaje: 'Lead actualizado' });
+    res.json({ ok: true, rotaciones:rotacionesReales, mensaje: 'Lead actualizado' });
   } catch(e) {
     console.error('Error actualizando lead:', e);
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar lead' });
@@ -1292,6 +1301,7 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
     const nuevoHist = historial.filter((_, i) => i !== idx);
     const eraActual = (lead.asesor_nombre || '') === (eliminado.asesor || '');
 
+    const rotacionesReales = contarRotacionesHistorial(nuevoHist);
     if (eraActual) {
       const asignaciones = nuevoHist.filter(h => h.asesor && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND');
       const previo = asignaciones[asignaciones.length - 1];
@@ -1302,15 +1312,15 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
         // entrada que lo rotó hacia el asesor eliminado.
         const tipifPrevio = eliminado.tipifVendAntes != null ? String(eliminado.tipifVendAntes) : '';
         await conn.query(
-          `UPDATE leads SET asesor_id=?, asesor_nombre=?, sin_asignar=0, tipif_vend=?, tipif_hora='', historial=? WHERE id=?`,
-          [asesorId, previo.asesor, tipifPrevio, JSON.stringify(nuevoHist), req.params.id]);
+          `UPDATE leads SET asesor_id=?, asesor_nombre=?, sin_asignar=0, tipif_vend=?, tipif_hora='', historial=?, rotaciones=? WHERE id=?`,
+          [asesorId, previo.asesor, tipifPrevio, JSON.stringify(nuevoHist), rotacionesReales, req.params.id]);
       } else {
         await conn.query(
-          `UPDATE leads SET asesor_id=NULL, asesor_nombre='', sin_asignar=1, tipif_vend='', tipif_hora='', historial=? WHERE id=?`,
-          [JSON.stringify(nuevoHist), req.params.id]);
+          `UPDATE leads SET asesor_id=NULL, asesor_nombre='', sin_asignar=1, tipif_vend='', tipif_hora='', historial=?, rotaciones=? WHERE id=?`,
+          [JSON.stringify(nuevoHist), rotacionesReales, req.params.id]);
       }
     } else {
-      await conn.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(nuevoHist), req.params.id]);
+      await conn.query(`UPDATE leads SET historial=?, rotaciones=? WHERE id=?`, [JSON.stringify(nuevoHist), rotacionesReales, req.params.id]);
     }
 
     // Auditoría para Jefatura/Gerencia: registra quién quitó qué asignación.
@@ -1326,10 +1336,10 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
     );
 
     await conn.commit();
-    const [after] = await conn.query(`SELECT historial, asesor_nombre, tipif_vend FROM leads WHERE id = ?`, [req.params.id]);
+    const [after] = await conn.query(`SELECT historial, asesor_nombre, tipif_vend, rotaciones FROM leads WHERE id = ?`, [req.params.id]);
     let histOut = [];
     try { histOut = JSON.parse(after[0].historial || '[]'); } catch { histOut = []; }
-    res.json({ ok: true, historial: histOut, asesor: after[0].asesor_nombre || '', tipif_vend: after[0].tipif_vend || '' });
+    res.json({ ok: true, historial: histOut, asesor: after[0].asesor_nombre || '', tipif_vend: after[0].tipif_vend || '', rotaciones:Number(after[0].rotaciones || 0) });
   } catch (e) {
     if (conn) await conn.rollback().catch(() => {});
     console.error(e);
