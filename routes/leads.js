@@ -376,8 +376,10 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const ventaConfirmada = ventaInfo ? 1 : 0;
       const ventaAsesorId = ventaInfo?.venta_asesor_id ?? null;
       const ventaAsesorNombre = ventaInfo?.venta_asesor_nombre ?? null;
-      const ventaCerrada = ventaConfirmada === 1 && ventaAsesorId;
       const tipifInterna = tipificacionInternaVenta(ventaInfo);
+      // Una venta caída vuelve a pertenecer al lead y puede ser rotada a otro
+      // vendedor. Las ventas vigentes continúan proyectando al vendedor de venta.
+      const ventaCerrada = ventaConfirmada === 1 && ventaAsesorId && tipifInterna?.tipificacion !== 'VENTA CAIDA';
       let obsAsesorPersonal = obsAsesor;
       let obsBackPersonal = l.obs_back || '';
       if (visorAsesorId && visorAsesorNombre) {
@@ -972,16 +974,36 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       await conn.rollback();
       return res.status(409).json({ ok:false, mensaje:'SIN COBERTURA permite un maximo de 2 rotaciones por dia' });
     }
-    if (tipificacionProhibida(lead.tipif_vend)) {
+    const n1Clean = String(lead.n1 || '').trim();
+    const [ventasProtegidas] = await conn.query(
+      `SELECT v.id, v.estado, v.estado_grab, v.motivo_seguimiento,
+              v.created_at AS venta_created_at, cv.estado_validacion,
+              cv.fecha_validacion, fechas.fecha_grabacion, fechas.fecha_seguimiento
+       FROM ventas v
+       LEFT JOIN (
+         SELECT vh.venta_id, vh.valor_nuevo AS estado_validacion, vh.created_at AS fecha_validacion
+         FROM venta_historial vh
+         INNER JOIN (
+           SELECT venta_id, MAX(id) AS max_id FROM venta_historial
+           WHERE campo='estado' AND tipo='CAMBIO_VALIDACION' GROUP BY venta_id
+         ) ult ON ult.max_id=vh.id
+       ) cv ON cv.venta_id=v.id
+       LEFT JOIN (
+         SELECT venta_id,
+                MAX(CASE WHEN campo='estado_grab' THEN created_at END) AS fecha_grabacion,
+                MAX(CASE WHEN modulo='Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento') THEN created_at END) AS fecha_seguimiento
+         FROM venta_historial GROUP BY venta_id
+       ) fechas ON fechas.venta_id=v.id
+       WHERE TRIM(v.telefono1) = ? ORDER BY v.id DESC LIMIT 1`,
+      [n1Clean]
+    );
+    const tipifInternaVentaActual = tipificacionInternaVenta(ventasProtegidas[0]);
+    const esVentaCaida = tipifInternaVentaActual?.tipificacion === 'VENTA CAIDA';
+    if (tipificacionProhibida(lead.tipif_vend) && !esVentaCaida) {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: `Numero prohibido: ${String(lead.tipif_vend).toUpperCase()}` });
     }
-    const n1Clean = String(lead.n1 || '').trim();
-    const [ventasProtegidas] = await conn.query(
-      `SELECT id FROM ventas WHERE TRIM(telefono1) = ? LIMIT 1`,
-      [n1Clean]
-    );
-    if (ventasProtegidas.length > 0) {
+    if (ventasProtegidas.length > 0 && !esVentaCaida) {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: 'Número protegido: ya generó una venta y no se puede rotar' });
     }
