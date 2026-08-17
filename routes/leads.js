@@ -346,29 +346,30 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       if (phones.length > 0) {
         const placeholders = phones.map(() => '?').join(',');
         const [ventas] = await db.query(
-          `SELECT v.telefono1, v.asesor_id, u.nombre AS asesor_nombre,
+          `SELECT v.id, v.telefono1, v.asesor_id, u.nombre AS asesor_nombre,
                   v.dni AS venta_documento, v.tipo_doc AS venta_tipo_doc,
-                  v.estado, v.estado_grab, v.motivo_seguimiento, v.created_at AS venta_created_at,
-                  cv.estado_validacion, cv.fecha_validacion, fechas.fecha_grabacion, fechas.fecha_seguimiento
-           FROM ventas v LEFT JOIN usuarios u ON u.id = v.asesor_id
-           LEFT JOIN (
-             SELECT vh.venta_id, vh.valor_nuevo AS estado_validacion, vh.created_at AS fecha_validacion
-             FROM venta_historial vh
-             INNER JOIN (
-               SELECT venta_id, MAX(id) AS max_id FROM venta_historial
-               WHERE campo='estado' AND tipo='CAMBIO_VALIDACION' GROUP BY venta_id
-             ) ult ON ult.max_id=vh.id
-           ) cv ON cv.venta_id=v.id
-           LEFT JOIN (
-             SELECT venta_id,
-                    MAX(CASE WHEN campo='estado_grab' THEN created_at END) AS fecha_grabacion,
-                    MAX(CASE WHEN modulo='Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento') THEN created_at END) AS fecha_seguimiento
-             FROM venta_historial GROUP BY venta_id
-           ) fechas ON fechas.venta_id=v.id
-           WHERE TRIM(v.telefono1) IN (${placeholders})
-             AND v.id IN (SELECT MAX(id) FROM ventas GROUP BY TRIM(telefono1))`,
+                  v.estado, v.estado_grab, v.motivo_seguimiento, v.created_at AS venta_created_at
+             FROM ventas v LEFT JOIN usuarios u ON u.id = v.asesor_id
+            WHERE v.telefono1 IN (${placeholders})
+              AND v.id = (SELECT MAX(v2.id) FROM ventas v2 WHERE v2.telefono1 = v.telefono1)`,
           phones
         );
+        if (ventas.length) {
+          const ventaIds = ventas.map(v => v.id);
+          const idsSql = ventaIds.map(() => '?').join(',');
+          const [eventos] = await db.query(
+            `SELECT venta_id,
+                    SUBSTRING_INDEX(GROUP_CONCAT(CASE WHEN campo='estado' AND tipo='CAMBIO_VALIDACION' THEN valor_nuevo END ORDER BY id DESC SEPARATOR '|||'), '|||', 1) AS estado_validacion,
+                    MAX(CASE WHEN campo='estado' AND tipo='CAMBIO_VALIDACION' THEN created_at END) AS fecha_validacion,
+                    MAX(CASE WHEN campo='estado_grab' THEN created_at END) AS fecha_grabacion,
+                    MAX(CASE WHEN modulo='Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento') THEN created_at END) AS fecha_seguimiento
+               FROM venta_historial
+              WHERE venta_id IN (${idsSql}) GROUP BY venta_id`,
+            ventaIds
+          );
+          const eventosMap = new Map(eventos.map(e => [Number(e.venta_id), e]));
+          for (const venta of ventas) Object.assign(venta, eventosMap.get(Number(venta.id)) || {});
+        }
         for (const vv of ventas) {
           ventaMap.set((vv.telefono1 || '').trim(), { ...vv, venta_asesor_id: vv.asesor_id, venta_asesor_nombre: vv.asesor_nombre });
         }
