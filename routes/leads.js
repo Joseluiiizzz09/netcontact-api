@@ -118,15 +118,18 @@ const TIPI_INTERNA_GRABACION = new Map([
 function tipificacionInternaVenta(venta) {
   if (!venta) return null;
   const candidatos = [];
-  const agregar = (mapa, valor, fecha, area, prioridad) => {
+  const agregar = (mapa, valor, fecha, area, prioridad, motivo) => {
     const regla = mapa.get(normalizarEstadoCRM(valor));
-    if (regla) candidatos.push({ tipificacion:regla[0], color:regla[1], fecha:fecha || venta.venta_created_at || '', area, prioridad });
+    if (regla) candidatos.push({
+      tipificacion:regla[0], color:regla[1], fecha:fecha || venta.venta_created_at || '',
+      area, prioridad, motivo:String(motivo || valor || '').trim()
+    });
   };
   const estadoGeneral = normalizarEstadoCRM(venta.estado);
   const estadoValidacion = venta.estado_validacion || (['VENTA','VALIDADO'].includes(estadoGeneral) ? estadoGeneral : '');
-  agregar(TIPI_INTERNA_VALIDACION, estadoValidacion, venta.fecha_validacion, 'VALIDACION', 1);
-  agregar(TIPI_INTERNA_GRABACION, venta.estado_grab, venta.fecha_grabacion, 'GRABACION', 2);
-  agregar(TIPI_INTERNA_SEGUIMIENTO, venta.estado, venta.fecha_seguimiento, 'SEGUIMIENTO', 3);
+  agregar(TIPI_INTERNA_VALIDACION, estadoValidacion, venta.fecha_validacion, 'VALIDACION', 1, estadoValidacion);
+  agregar(TIPI_INTERNA_GRABACION, venta.estado_grab, venta.fecha_grabacion, 'GRABACION', 2, venta.estado_grab);
+  agregar(TIPI_INTERNA_SEGUIMIENTO, venta.estado, venta.fecha_seguimiento, 'SEGUIMIENTO', 3, venta.motivo_seguimiento || venta.estado);
   candidatos.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.prioridad - b.prioridad);
   return candidatos[candidatos.length - 1] || null;
 }
@@ -416,6 +419,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         tipif_interna_color: tipifInterna?.color || '',
         tipif_interna_area: tipifInterna?.area || '',
         tipif_interna_fecha: tipifInterna?.fecha || '',
+        tipif_interna_motivo: tipifInterna?.motivo || '',
         ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
         obs_asesor_personal: obsAsesorPersonal,
