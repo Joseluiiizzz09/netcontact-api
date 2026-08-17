@@ -280,14 +280,15 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       // no como asesorAnterior/rotadoPor. Así, al quitar su asignación desaparece de su base.
       sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%\"asesor\":\"', ?, '\"%'))`;
       params.push(req.user.id, nom);
-      // Si el número ya produjo una venta, queda visible solamente para el
-      // asesor que la registró. Los participantes anteriores dejan de verlo
-      // aunque permanezcan en el historial para fines de auditoría.
+      // Si el número ya produjo una venta, queda visible para quien la registró
+      // o para el titular actual. Esto permite que una VENTA CAIDA rotada llegue
+      // como NUEVO al vendedor que debe intentar cerrarla nuevamente.
       sql += ` AND (
-        NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
+        l.asesor_id = ?
+        OR NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
         OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
       )`;
-      params.push(req.user.id);
+      params.push(req.user.id, req.user.id);
     } else if (asesor_id) {
       const [uNom] = await db.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [asesor_id]);
       const nom = uNom[0]?.nombre || '';
@@ -300,10 +301,11 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"asesor":"', ?, '"%'))`;
         params.push(asesor_id, nom);
         sql += ` AND (
-          NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
+          l.asesor_id = ?
+          OR NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
           OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
         )`;
-        params.push(asesor_id);
+        params.push(asesor_id, asesor_id);
       }
     }
 
