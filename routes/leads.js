@@ -252,21 +252,36 @@ async function nombreUsuario(id) {
 // GET /api/leads
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
-    const { fecha, asesor_id, area } = req.query;
+    const { fecha, asesor_id, area, numero, desde, hasta } = req.query;
     const permisosUsuario = Array.isArray(req.user.permisos) ? req.user.permisos : [];
     if (area && area !== req.user.cargo && !permisosUsuario.includes(area)) {
       return res.status(403).json({ ok: false, mensaje: 'Sin permiso para consultar esta área' });
     }
     const cargoEfectivo = area || req.user.cargo;
 
-    const errGet = validar([errorFecha(fecha, 'fecha')]);
+    const errGet = validar([errorFecha(fecha, 'fecha'), errorFecha(desde, 'desde'), errorFecha(hasta, 'hasta')]);
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
+    const numeroBusqueda = String(numero || '').replace(/\D/g, '').slice(0, 20);
 
     let sql = `SELECT l.*, u.nombre as asesor_nombre_db
       FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
     const params = [];
     let visorAsesorId = null;
     let visorAsesorNombre = '';
+
+    // La búsqueda global se resuelve en MySQL y no descargando toda la base al
+    // navegador. Para teléfonos completos conserva búsquedas indexables.
+    if (numeroBusqueda) {
+      if (numeroBusqueda.length >= 7) {
+        sql += ` AND (l.n1 = ? OR l.n2 = ?)`;
+        params.push(numeroBusqueda, numeroBusqueda);
+      } else {
+        sql += ` AND (l.n1 LIKE ? OR l.n2 LIKE ?)`;
+        params.push(`%${numeroBusqueda}%`, `%${numeroBusqueda}%`);
+      }
+    }
+    if (desde) { sql += ` AND l.fecha >= ?`; params.push(desde); }
+    if (hasta) { sql += ` AND l.fecha <= ?`; params.push(hasta); }
 
     if (cargoEfectivo === 'asesor') {
       // Base del asesor: leads asignados AHORA a él + los que trabajó antes

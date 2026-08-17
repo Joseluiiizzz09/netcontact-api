@@ -384,6 +384,7 @@ async function initDB() {
       ['idx_leads_asesor', 'leads', 'asesor_id'],
       ['idx_leads_created', 'leads', 'created_at'],
       ['idx_leads_n1', 'leads', 'n1'],
+      ['idx_leads_n2', 'leads', 'n2'],
       ['idx_leads_fecha_created', 'leads', 'fecha, created_at'],
       ['idx_leads_fecha_n1', 'leads', 'fecha, n1'],
       ['idx_frases_created', 'frases', 'created_at'],
