@@ -1067,7 +1067,14 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       return res.status(409).json({ ok: false, mensaje: 'Número protegido: ya generó una venta y no se puede rotar' });
     }
 
-    const [usuarios] = await conn.query(`SELECT id, nombre FROM usuarios WHERE nombre = ? AND activo = 1 LIMIT 1`, [asesor_nombre.trim()]);
+    const [usuarios] = await conn.query(`
+      SELECT id, TRIM(nombre) AS nombre
+      FROM usuarios
+      WHERE TRIM(nombre) = ?
+        AND activo = 1
+        AND (cargo = 'asesor' OR JSON_CONTAINS(COALESCE(permisos, '[]'), JSON_QUOTE('asesor')))
+      LIMIT 1
+    `, [asesor_nombre.trim()]);
     if (!usuarios.length) {
       await conn.rollback();
       return res.status(404).json({ ok: false, mensaje: 'Asesor no encontrado o inactivo' });
