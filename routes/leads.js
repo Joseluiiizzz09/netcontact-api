@@ -149,6 +149,12 @@ function contarRotacionesHistorial(valor) {
   }).length;
 }
 
+function ultimaTipificacionVendedorHistorial(valor) {
+  const eventos = historialArray(valor).filter(h => h?.tipo === 'TIPIF_VEND' && String(h?.tipif || '').trim());
+  if (!eventos.length) return '';
+  return String(eventos.reduce((a, b) => Number(b.ts || 0) >= Number(a.ts || 0) ? b : a).tipif || '').trim();
+}
+
 function esTipificacionOrigen(valor) {
   const tipif = normalizarTipifVendLegacy(valor).trim().toUpperCase();
   return Boolean(tipif) && !['NUEVO', 'NO ROTAR'].includes(tipif);
@@ -183,7 +189,7 @@ function resumenSinCoberturaDia(lead, historial, fecha = fechaPeruHoy()) {
 }
 
 async function existeTipificadoOtraCampana(conn, n1, fecha, campana, excluirId = null) {
-  const params = [normalizarN1(n1), fecha, normalizarCampana(campana)];
+  const params = [normalizarN1(n1), fecha];
   let excluirSql = '';
   if (excluirId) { excluirSql = ' AND id <> ?'; params.push(excluirId); }
   const [rows] = await conn.query(`
@@ -191,7 +197,7 @@ async function existeTipificadoOtraCampana(conn, n1, fecha, campana, excluirId =
     FROM leads
     WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
       AND fecha = ?
-      AND UPPER(TRIM(campana)) <> UPPER(TRIM(?))${excluirSql}
+      ${excluirSql}
   `, params);
   return rows.some(r => resumenTipificadoDia(r, r.historial, fecha).aplica);
 }
@@ -213,6 +219,11 @@ async function bloquearOtrasCampanasDelDia(conn, lead) {
   const n1 = normalizarN1(lead?.n1);
   const fecha = normalizarFechaAsignacion(lead?.fecha) || fechaPeruHoy();
   if (!n1 || !fecha) return;
+  const principalId = await idLeadMasAntiguoDelDia(conn, n1, fecha);
+  if (principalId && Number(principalId) !== Number(lead?.id)) {
+    await conn.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaPeruAhora(), lead.id]);
+    return;
+  }
   let creadoEn = lead?.created_at || null;
   if (!creadoEn && lead?.id) {
     const [origen] = await conn.query(`SELECT created_at FROM leads WHERE id=? LIMIT 1`, [lead.id]);
@@ -224,24 +235,23 @@ async function bloquearOtrasCampanasDelDia(conn, lead) {
     WHERE id <> ?
       AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
       AND fecha = ?
-      AND UPPER(TRIM(campana)) <> UPPER(TRIM(?))
       AND UPPER(TRIM(COALESCE(tipif_vend,''))) NOT IN ('VENTA CERRADA','NO TOCAR','SH NO TOCAR','NO ROTAR','SH NO ROTAR')
       AND (? IS NULL OR created_at > ?)
-  `, [horaPeruAhora(), lead.id, n1, fecha, normalizarCampana(lead.campana), creadoEn, creadoEn]);
+  `, [horaPeruAhora(), principalId || lead.id, n1, fecha, creadoEn, creadoEn]);
 }
 
 async function bloquearDuplicadosAlRotar(conn, lead) {
   const n1 = normalizarN1(lead?.n1);
   const fecha = normalizarFechaAsignacion(lead?.fecha);
   if (!n1 || !fecha) return;
+  const principalId = await idLeadMasAntiguoDelDia(conn, n1, fecha);
   await conn.query(`
     UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=?
     WHERE id<>?
       AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '')=?
       AND fecha=?
-      AND UPPER(TRIM(campana))<>UPPER(TRIM(?))
       AND UPPER(TRIM(COALESCE(tipif_vend,''))) NOT IN ('VENTA CERRADA','NO TOCAR','SH NO TOCAR','NO ROTAR','SH NO ROTAR')
-  `, [horaPeruAhora(), lead.id, n1, fecha, normalizarCampana(lead.campana)]);
+  `, [horaPeruAhora(), principalId || lead.id, n1, fecha]);
 }
 
 async function nombreUsuario(id) {
@@ -376,9 +386,30 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       }
     }
 
+    const resumenNumeroDia = new Map();
+    for (const l of data) {
+      const clave = `${normalizarN1(l.n1)}|${normalizarFechaAsignacion(l.fecha)}`;
+      const rotaciones = contarRotacionesHistorial(l.historial);
+      const actual = resumenNumeroDia.get(clave);
+      const maxRotaciones = Math.max(Number(actual?.rotaciones || 0), rotaciones);
+      if (!actual || String(l.created_at || '').localeCompare(String(actual.createdAt || '')) < 0 ||
+          (String(l.created_at || '') === String(actual.createdAt || '') && Number(l.id) < Number(actual.id))) {
+        resumenNumeroDia.set(clave, { id:Number(l.id), createdAt:l.created_at, rotaciones:maxRotaciones });
+      } else {
+        actual.rotaciones = maxRotaciones;
+      }
+    }
+
     const salida = data.map(l => {
       const historial = (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })();
-      const rotacionesReales = contarRotacionesHistorial(historial);
+      const claveNumeroDia = `${normalizarN1(l.n1)}|${normalizarFechaAsignacion(l.fecha)}`;
+      const resumenDia = resumenNumeroDia.get(claveNumeroDia);
+      const rotacionesReales = Number(resumenDia?.rotaciones || contarRotacionesHistorial(historial));
+      const esPrincipalDia = Number(resumenDia?.id) === Number(l.id);
+      const tipifPersistida = normalizarTipifVendLegacy(l.tipif_vend);
+      const tipifVisible = esPrincipalDia && String(tipifPersistida).toUpperCase() === 'NO ROTAR'
+        ? (ultimaTipificacionVendedorHistorial(historial) || tipifPersistida)
+        : tipifPersistida;
       let obsAsesor = l.obs_asesor || '';
       const documentoEnObs = obsAsesor.match(/\b(DNI|CE|RUC)\s*:\s*\d+/i)?.[0] || '';
       if (visorAsesorId && visorAsesorNombre && documentoEnObs) {
@@ -428,7 +459,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       return {
         ...l,
         campana: normalizarCampana(l.campana) || l.campana,
-        tipif_vend: normalizarTipifVendLegacy(l.tipif_vend),
+        tipif_vend: tipifVisible,
         rotaciones: rotacionesReales,
         venta_confirmada: ventaConfirmada,
         venta_asesor_id: ventaAsesorId,
@@ -987,6 +1018,12 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     }
     const lead = leads[0];
+    const fechaLead = normalizarFechaAsignacion(lead.fecha);
+    const principalId = await idLeadMasAntiguoDelDia(conn, lead.n1, fechaLead);
+    if (principalId && Number(principalId) !== Number(lead.id)) {
+      await conn.rollback();
+      return res.status(409).json({ ok:false, mensaje:'Numero prohibido: NO ROTAR. Solo se rota el primer registro del numero en el dia.' });
+    }
     const limiteDiario = resumenSinCoberturaDia(lead, lead.historial);
     if (limiteDiario.aplica && limiteDiario.rotaciones >= 2) {
       await conn.rollback();
@@ -1017,9 +1054,13 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     );
     const tipifInternaVentaActual = tipificacionInternaVenta(ventasProtegidas[0]);
     const esVentaCaida = tipifInternaVentaActual?.tipificacion === 'VENTA CAIDA';
-    if (tipificacionProhibida(lead.tipif_vend) && !esVentaCaida) {
+    const tipifHistorial = ultimaTipificacionVendedorHistorial(lead.historial);
+    const tipifProteccion = String(lead.tipif_vend || '').trim().toUpperCase() === 'NO ROTAR' && tipifHistorial
+      ? tipifHistorial
+      : lead.tipif_vend;
+    if (tipificacionProhibida(tipifProteccion) && !esVentaCaida) {
       await conn.rollback();
-      return res.status(409).json({ ok: false, mensaje: `Numero prohibido: ${String(lead.tipif_vend).toUpperCase()}` });
+      return res.status(409).json({ ok: false, mensaje: `Numero prohibido: ${String(tipifProteccion).toUpperCase()}` });
     }
     if (ventasProtegidas.length > 0 && !esVentaCaida) {
       await conn.rollback();
