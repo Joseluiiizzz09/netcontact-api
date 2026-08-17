@@ -196,6 +196,30 @@ function valorHistorial(valor) {
   return String(valor);
 }
 
+function normalizarEstadoCRM(valor) {
+  return String(valor || '').trim().toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+}
+
+const ESTADOS_VENTA_CAIDA_SEGUIMIENTO = new Set(['CAIDA','RECHAZO','RECHAZO CAMPO','RECHAZO EN CAMPO','RECHAZO MESA','RECHAZO EN MESA','SERVICIO ACTIVO']);
+const ESTADOS_VENTA_CAIDA_VALIDACION = new Set(['CORTA LLAMADA','BUZON DE VOZ','CORREGIR','FRAUDE','MALA OFERTA','NO CONTESTA','NO DESEA','SERVICIO ACTIVO']);
+const ESTADOS_VENTA_CAIDA_GRABACION = new Set(['PENDIENTE','BUZON DE VOZ','BUZON','CORREGIR SEC','CORTA LLAMADA','ESPERANDO TERCERO','NO CONTESTA','NO DESEA','SUPLANTACION']);
+
+function ventaEstaCaida(venta) {
+  if (!venta) return false;
+  const candidatos = [];
+  const agregar = (estados, valor, fecha, prioridad) => {
+    const estado = normalizarEstadoCRM(valor);
+    if (estado) candidatos.push({ caida: estados.has(estado), fecha: fecha || venta.created_at || '', prioridad });
+  };
+  const general = normalizarEstadoCRM(venta.estado);
+  const validacion = venta.estado_validacion || (['VENTA','VALIDADO'].includes(general) ? general : '');
+  agregar(ESTADOS_VENTA_CAIDA_VALIDACION, validacion, venta.fecha_validacion, 1);
+  agregar(ESTADOS_VENTA_CAIDA_GRABACION, venta.estado_grab, venta.fecha_grabacion, 2);
+  agregar(ESTADOS_VENTA_CAIDA_SEGUIMIENTO, venta.estado, venta.fecha_seguimiento, 3);
+  candidatos.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.prioridad - b.prioridad);
+  return candidatos[candidatos.length - 1]?.caida === true;
+}
+
 function actualizarDocumentoEnTexto(texto, documento) {
   const actual = String(texto || '').trim();
   const patron = /\b(?:DNI|CE|RUC)\s*:\s*\d+/gi;
@@ -371,10 +395,26 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
         }
       }
       const [yaUsado] = await conn.query(
-        `SELECT id FROM ventas WHERE TRIM(COALESCE(telefono1,'')) = ? LIMIT 1`,
+        `SELECT v.*, cv.estado_validacion, cv.fecha_validacion,
+                fechas.fecha_grabacion, fechas.fecha_seguimiento
+           FROM ventas v
+           LEFT JOIN (
+             SELECT vh.venta_id, vh.valor_nuevo AS estado_validacion, vh.created_at AS fecha_validacion
+               FROM venta_historial vh
+               JOIN (SELECT venta_id, MAX(id) max_id FROM venta_historial
+                       WHERE campo='estado' AND tipo='CAMBIO_VALIDACION' GROUP BY venta_id) ult ON ult.max_id=vh.id
+           ) cv ON cv.venta_id=v.id
+           LEFT JOIN (
+             SELECT venta_id,
+                    MAX(CASE WHEN campo='estado_grab' THEN created_at END) AS fecha_grabacion,
+                    MAX(CASE WHEN modulo='Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento') THEN created_at END) AS fecha_seguimiento
+               FROM venta_historial GROUP BY venta_id
+           ) fechas ON fechas.venta_id=v.id
+          WHERE TRIM(COALESCE(v.telefono1,'')) = ?
+          ORDER BY v.id DESC LIMIT 1 FOR UPDATE`,
         [String(v.telefono1).trim()]
       );
-      if (yaUsado.length > 0) {
+      if (yaUsado.length > 0 && !ventaEstaCaida(yaUsado[0])) {
         await conn.rollback();
         return res.status(400).json({ ok: false, mensaje: 'Este número ya fue registrado en otra venta. No puede ser usado nuevamente.' });
       }

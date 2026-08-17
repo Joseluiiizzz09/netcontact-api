@@ -1469,6 +1469,15 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
     const nuevoHist = historial.filter((_, i) => i !== idx);
     const eraActual = (lead.asesor_nombre || '') === (eliminado.asesor || '');
 
+    const [actores] = await conn.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+    const actor = actores[0] || {};
+    nuevoHist.push({
+      tipo: 'QUITAR_ASIGNACION', asesorQuitado: eliminado.asesor || '',
+      quitadoPor: actor.nombre || req.user.nombre || 'Usuario',
+      cargoQuitadoPor: actor.cargo || req.user.cargo || '',
+      hora: horaPeruAhora(), fecha: fechaPeruHoy(), ts: Date.now(), eraActual,
+    });
+
     const rotacionesReales = contarRotacionesHistorial(nuevoHist);
     if (eraActual) {
       const asignaciones = nuevoHist.filter(h => h.asesor && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND');
@@ -1492,8 +1501,6 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
     }
 
     // Auditoría para Jefatura/Gerencia: registra quién quitó qué asignación.
-    const [actores] = await conn.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
-    const actor = actores[0] || {};
     await conn.query(
       `INSERT INTO eliminaciones
         (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, snapshot_json)
