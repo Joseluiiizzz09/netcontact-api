@@ -11,6 +11,10 @@ const { validar, errorTexto, errorEnum, errorPermisos, GENERO_OK } = require('..
 const ROLES = ['jefatura','usuarios'];
 const CARGOS_VALIDOS = ['jefatura','usuarios','supervisor','backoffice','asesor','validacion','grabaciones','seguimiento','programacion','supgrabaciones','backreclutamiento','asesorreclutamiento'];
 
+function normalizarNombrePersonal(nombre) {
+  return String(nombre || '').trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
 // GET todos
 router.get('/', auth(['jefatura','usuarios','backoffice','supervisor','backreclutamiento']), async (req, res) => {
   try {
@@ -32,11 +36,12 @@ router.get('/', auth(['jefatura','usuarios','backoffice','supervisor','backreclu
 router.post('/', auth(ROLES), async (req, res) => {
   try {
     const { nombre, usuario, password, cargo, sala, genero, activo, permisos } = req.body;
+    const nombreNormalizado = normalizarNombrePersonal(nombre);
     if (!nombre || !usuario || !password || !cargo)
       return res.status(400).json({ ok: false, mensaje: 'Campos obligatorios faltantes' });
 
     const errores = validar([
-      errorTexto(nombre,   'nombre',   { requerido: true, max: 150 }),
+      errorTexto(nombreNormalizado, 'nombre', { requerido: true, max: 150 }),
       errorTexto(usuario,  'usuario',  { requerido: true, max: 100 }),
       errorTexto(password, 'password', { requerido: true, max: 100 }),
       (password && String(password).length < 6) ? 'password debe tener al menos 6 caracteres' : null,
@@ -60,7 +65,7 @@ router.post('/', auth(ROLES), async (req, res) => {
     const [result] = await db.query(`
       INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, activo, permisos)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [nombre, usuario.toLowerCase(), hash, cargo, sala||null, genero||'M', activo!==false?1:0, permisosJSON]);
+    `, [nombreNormalizado, usuario.toLowerCase(), hash, cargo, sala||null, genero||'M', activo!==false?1:0, permisosJSON]);
 
     res.json({ ok: true, id: result.insertId, mensaje: 'Usuario creado' });
   } catch(e) {
@@ -73,9 +78,10 @@ router.post('/', auth(ROLES), async (req, res) => {
 router.patch('/:id', auth(ROLES), async (req, res) => {
   try {
     const { nombre, usuario, cargo, sala, password, permisos } = req.body;
+    const nombreNormalizado = normalizarNombrePersonal(nombre);
 
     const errores = validar([
-      errorTexto(nombre,  'nombre',  { requerido: true, max: 150 }),
+      errorTexto(nombreNormalizado, 'nombre', { requerido: true, max: 150 }),
       errorTexto(usuario, 'usuario', { requerido: true, max: 100 }),
       errorTexto(password, 'password', { max: 100 }),
       (password && String(password).length < 6) ? 'password debe tener al menos 6 caracteres' : null,
@@ -105,18 +111,18 @@ router.patch('/:id', auth(ROLES), async (req, res) => {
       const hash = bcrypt.hashSync(password, 10);
       if (permisosJSON !== undefined) {
         await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, password=?, permisos=? WHERE id=?`,
-          [nombre, usuario.toLowerCase(), cargofinal, sala||null, hash, permisosJSON, req.params.id]);
+          [nombreNormalizado, usuario.toLowerCase(), cargofinal, sala||null, hash, permisosJSON, req.params.id]);
       } else {
         await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, password=? WHERE id=?`,
-          [nombre, usuario.toLowerCase(), cargofinal, sala||null, hash, req.params.id]);
+          [nombreNormalizado, usuario.toLowerCase(), cargofinal, sala||null, hash, req.params.id]);
       }
     } else {
       if (permisosJSON !== undefined) {
         await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=?, permisos=? WHERE id=?`,
-          [nombre, usuario.toLowerCase(), cargofinal, sala||null, permisosJSON, req.params.id]);
+          [nombreNormalizado, usuario.toLowerCase(), cargofinal, sala||null, permisosJSON, req.params.id]);
       } else {
         await db.query(`UPDATE usuarios SET nombre=?, usuario=?, cargo=?, sala=? WHERE id=?`,
-          [nombre, usuario.toLowerCase(), cargofinal, sala||null, req.params.id]);
+          [nombreNormalizado, usuario.toLowerCase(), cargofinal, sala||null, req.params.id]);
       }
     }
     res.json({ ok: true, mensaje: 'Usuario actualizado' });

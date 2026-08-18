@@ -469,7 +469,7 @@ async function initDB() {
         const hash = bcrypt.hashSync(adminPass, 10);
         await conn.query(`
           INSERT INTO usuarios (nombre, usuario, password, cargo, sala, genero, permisos)
-          VALUES ('Administrador', 'admin', ?, 'jefatura', 'SALA 1', 'M', '[]')
+          VALUES ('ADMINISTRADOR', 'admin', ?, 'jefatura', 'SALA 1', 'M', '[]')
         `, [hash]);
         console.log('✅ Usuario admin creado con la contraseña de ADMIN_PASSWORD');
       }

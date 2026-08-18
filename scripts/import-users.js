@@ -45,6 +45,10 @@ const TOTAL_ESPERADO = 127;
 /* ── Helpers ────────────────────────────────────────────────────────── */
 function bloquear(msg) { console.error(`\n[BLOQUEADO] ${msg}`); process.exit(1); }
 
+function normalizarNombrePersonal(nombre) {
+  return String(nombre || '').trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
 function validarUsuario(u, idx, loginsEnArchivo) {
   const errores = [];
   if (!u.nombre  || !u.nombre.trim())    errores.push('nombre obligatorio');
@@ -200,7 +204,7 @@ async function main() {
         const [result] = await conn.query(
           `INSERT INTO usuarios (nombre, usuario, password, cargo, sala, activo, permisos)
            VALUES (?, ?, ?, ?, ?, 1, ?)`,
-          [u.nombre.trim(), u.usuario.toLowerCase(), hash, u.cargo, sala, permisos]
+          [normalizarNombrePersonal(u.nombre), u.usuario.toLowerCase(), hash, u.cargo, sala, permisos]
         );
         creados.push({ id: result.insertId, login: u.usuario.toLowerCase() });
       }
