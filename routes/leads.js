@@ -31,6 +31,17 @@ function normalizarN1(valor) {
   return String(valor || '').replace(/\D+/g, '');
 }
 
+function normalizarUsuarioWhatsapp(valor) {
+  return String(valor || '').trim().replace(/^@+/, '').substring(0, 100);
+}
+
+function claveIdentidadLead(lead) {
+  const numero = normalizarN1(lead?.n1);
+  if (numero) return `n1:${numero}`;
+  const usuario = normalizarUsuarioWhatsapp(lead?.usuario_whatsapp).toLowerCase();
+  return usuario ? `wa:${usuario}` : `id:${lead?.id || ''}`;
+}
+
 function normalizarCampana(valor) {
   const campana = String(valor || '')
     .trim()
@@ -271,7 +282,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
 
     const errGet = validar([errorFecha(fecha, 'fecha'), errorFecha(desde, 'desde'), errorFecha(hasta, 'hasta')]);
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
-    const numeroBusqueda = String(numero || '').replace(/\D/g, '').slice(0, 20);
+    const busquedaRaw = String(numero || '').trim().slice(0, 100);
+    const numeroBusqueda = busquedaRaw.replace(/\D/g, '').slice(0, 20);
+    const esBusquedaNumerica = /^[\d\s()+.\-]+$/.test(busquedaRaw);
 
     let sql = `SELECT l.*, u.nombre as asesor_nombre_db
       FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
@@ -281,7 +294,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
 
     // La búsqueda global se resuelve en MySQL y no descargando toda la base al
     // navegador. Para teléfonos completos conserva búsquedas indexables.
-    if (numeroBusqueda) {
+    if (busquedaRaw && esBusquedaNumerica && numeroBusqueda) {
       if (numeroBusqueda.length >= 7) {
         sql += ` AND (l.n1 = ? OR l.n2 = ?)`;
         params.push(numeroBusqueda, numeroBusqueda);
@@ -289,6 +302,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         sql += ` AND (l.n1 LIKE ? OR l.n2 LIKE ?)`;
         params.push(`%${numeroBusqueda}%`, `%${numeroBusqueda}%`);
       }
+    } else if (busquedaRaw) {
+      sql += ` AND l.usuario_whatsapp LIKE ?`;
+      params.push(`%${normalizarUsuarioWhatsapp(busquedaRaw)}%`);
     }
     if (desde) { sql += ` AND l.fecha >= ?`; params.push(desde); }
     if (hasta) { sql += ` AND l.fecha <= ?`; params.push(hasta); }
@@ -388,7 +404,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
 
     const resumenNumeroDia = new Map();
     for (const l of data) {
-      const clave = `${normalizarN1(l.n1)}|${normalizarFechaAsignacion(l.fecha)}`;
+      const clave = `${claveIdentidadLead(l)}|${normalizarFechaAsignacion(l.fecha)}`;
       const rotaciones = contarRotacionesHistorial(l.historial);
       const actual = resumenNumeroDia.get(clave);
       const maxRotaciones = Math.max(Number(actual?.rotaciones || 0), rotaciones);
@@ -402,7 +418,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
 
     const salida = data.map(l => {
       const historial = (() => { try { return JSON.parse(l.historial||'[]'); } catch(e){ return []; } })();
-      const claveNumeroDia = `${normalizarN1(l.n1)}|${normalizarFechaAsignacion(l.fecha)}`;
+      const claveNumeroDia = `${claveIdentidadLead(l)}|${normalizarFechaAsignacion(l.fecha)}`;
       const resumenDia = resumenNumeroDia.get(claveNumeroDia);
       const rotacionesReales = Number(resumenDia?.rotaciones || contarRotacionesHistorial(historial));
       const esPrincipalDia = Number(resumenDia?.id) === Number(l.id);
@@ -482,7 +498,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     // las posteriores se proyectan como NO ROTAR y comparten su contador.
     const gruposPorDia = new Map();
     for (const lead of salida) {
-      const clave = `${normalizarN1(lead.n1)}|${normalizarFechaAsignacion(lead.fecha)}`;
+      const clave = `${claveIdentidadLead(lead)}|${normalizarFechaAsignacion(lead.fecha)}`;
       if (!gruposPorDia.has(clave)) gruposPorDia.set(clave, []);
       gruposPorDia.get(clave).push(lead);
     }
@@ -847,21 +863,27 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     // Validar todas las fechas antes de insertar para evitar lotes parciales.
     for (const l of leads) {
       const fechaLead = l.fecha || fechaHoy;
+      const n1Normalizado = normalizarN1(l.n1);
+      const usuarioWhatsapp = normalizarUsuarioWhatsapp(l.usuario_whatsapp);
       const errores = validar([
         errorFecha(fechaLead, 'fecha'),
-        errorTexto(l.n1, 'n1', { requerido: true, max: 30 }),
+        errorTexto(l.n1, 'n1', { max: 30 }),
+        errorTexto(usuarioWhatsapp, 'usuario_whatsapp', { max: 100 }),
         errorTexto(l.tipo_contacto, 'tipo_contacto', { max: 20 }),
         errorTexto(l.direccion, 'direccion', { max: 1000 }),
         errorTexto(l.coordenadas, 'coordenadas', { max: 255 }),
         errorTexto(l.obs_back, 'obs_back', { max: 2000 }),
       ]);
       if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+      if (!n1Normalizado && !usuarioWhatsapp) {
+        return res.status(400).json({ ok: false, mensaje: 'Ingresa un N1 o un usuario de WhatsApp' });
+      }
     }
 
     for (const l of leads) {
-      if (!l.n1) continue;
       const fechaLead = l.fecha || fechaHoy;
       const n1Normalizado = normalizarN1(l.n1);
+      const usuarioWhatsapp = normalizarUsuarioWhatsapp(l.usuario_whatsapp);
 
       // El alta individual solicita esta comprobacion. La carga masiva conserva
       // su flujo de vista previa y su opcion explicita de incluir duplicados.
@@ -911,10 +933,10 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
       const derivadoPorNombre = registraAutor ? await nombreUsuario(req.user.id) : '';
       const [result] = await db.query(`
-        INSERT INTO leads (campana, distrito, n1, n2, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO leads (campana, distrito, n1, n2, usuario_whatsapp, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        campanaNormalizada, l.distrito||'', l.n1, l.n2||null,
+        campanaNormalizada, l.distrito||'', n1Normalizado, l.n2||null, usuarioWhatsapp,
         l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
         registraAutor ? req.user.id : null, derivadoPorNombre,
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, asesorId?1:0

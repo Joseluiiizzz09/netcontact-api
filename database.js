@@ -114,6 +114,7 @@ async function initDB() {
         distrito      VARCHAR(100) DEFAULT '',
         n1            VARCHAR(20)  NOT NULL,
         n2            VARCHAR(20),
+        usuario_whatsapp VARCHAR(100) DEFAULT '',
         tipo_contacto VARCHAR(20)  DEFAULT 'LLAMADA',
         direccion     TEXT,
         coordenadas   VARCHAR(255) DEFAULT '',
@@ -187,6 +188,7 @@ async function initDB() {
     // columnas nuevas cuando la tabla ya fue creada.
     const columnasLead = [
       ['tipo_contacto', "VARCHAR(20) DEFAULT 'LLAMADA'"],
+      ['usuario_whatsapp', "VARCHAR(100) DEFAULT ''"],
       ['direccion',     'TEXT'],
       ['coordenadas',   "VARCHAR(255) DEFAULT ''"],
       ['distrito_sin_cobertura', "VARCHAR(100) DEFAULT ''"],
