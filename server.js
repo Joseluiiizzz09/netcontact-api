@@ -6,6 +6,7 @@ const fs         = require('fs');
 const rateLimit  = require('express-rate-limit');
 const helmet     = require('helmet');
 const auth       = require('./middleware/auth');
+const { loginLimiter } = require('./security/loginRateLimit');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -21,17 +22,7 @@ app.use(cors({
   credentials: false,
 }));
 
-app.use('/api/login', rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 5,
-  // La empresa comparte una misma IP publica. El bloqueo debe pertenecer a la
-  // cuenta que acumula fallos, no a toda la oficina.
-  keyGenerator: req => `usuario:${String(req.body?.usuario || '').trim().toLowerCase()}`,
-  skipSuccessfulRequests: true,
-  message: { ok: false, mensaje: 'Usuario bloqueado temporalmente por varios intentos fallidos. Intenta nuevamente en 5 minutos.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-}));
+app.use('/api/login', loginLimiter);
 
 const uploadLimiter = rateLimit({
   windowMs: 60 * 1000,

@@ -7,6 +7,7 @@ const bcrypt  = require('bcryptjs');
 const db      = require('../database');
 const auth    = require('../middleware/auth');
 const { validar, errorTexto, errorEnum, errorPermisos, GENERO_OK } = require('../middleware/validar');
+const { desbloquearLogin } = require('../security/loginRateLimit');
 
 const ROLES = ['jefatura','usuarios'];
 const CARGOS_VALIDOS = ['jefatura','usuarios','supervisor','backoffice','asesor','validacion','grabaciones','seguimiento','programacion','supgrabaciones','backreclutamiento','asesorreclutamiento'];
@@ -144,6 +145,21 @@ router.patch('/:id/estado', auth(ROLES), async (req, res) => {
     res.json({ ok: true, mensaje: activo ? 'Usuario activado' : 'Usuario desactivado' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al cambiar estado' });
+  }
+});
+
+// PATCH /api/usuarios/:id/desbloquear-login
+// Reinicia únicamente los intentos fallidos del login. No cambia contraseña,
+// estado activo, cargo ni permisos. Acción exclusiva de Jefatura.
+router.patch('/:id/desbloquear-login', auth(['jefatura']), async (req, res) => {
+  try {
+    const [rows] = await db.query(`SELECT id, nombre, usuario FROM usuarios WHERE id = ? LIMIT 1`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
+    desbloquearLogin(rows[0].usuario);
+    res.json({ ok: true, mensaje: `${rows[0].nombre} fue desbloqueado. Ya puede iniciar sesión.` });
+  } catch (e) {
+    console.error('[DESBLOQUEAR LOGIN]', e.message || e);
+    res.status(500).json({ ok: false, mensaje: 'No se pudo desbloquear el usuario' });
   }
 });
 
