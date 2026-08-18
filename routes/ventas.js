@@ -220,6 +220,55 @@ function ventaEstaCaida(venta) {
   return candidatos[candidatos.length - 1]?.caida === true;
 }
 
+async function completarEstadoVentaCaida(conn, venta) {
+  if (!venta?.id) return venta;
+  const [eventos] = await conn.query(`
+    SELECT tipo, modulo, campo, valor_nuevo, created_at
+    FROM venta_historial
+    WHERE venta_id = ?
+      AND (
+        (campo = 'estado' AND tipo = 'CAMBIO_VALIDACION')
+        OR campo = 'estado_grab'
+        OR (modulo = 'Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento'))
+      )
+    ORDER BY id ASC
+  `, [venta.id]);
+  const completa = { ...venta };
+  for (const evento of eventos) {
+    if (evento.campo === 'estado' && evento.tipo === 'CAMBIO_VALIDACION') {
+      completa.estado_validacion = evento.valor_nuevo;
+      completa.fecha_validacion = evento.created_at;
+    }
+    if (evento.campo === 'estado_grab') completa.fecha_grabacion = evento.created_at;
+    if (evento.modulo === 'Seguimiento') completa.fecha_seguimiento = evento.created_at;
+  }
+  return completa;
+}
+
+let expiracionProgramacionesEnCurso = null;
+let ultimaExpiracionProgramaciones = 0;
+
+async function expirarProgramacionesVencidas() {
+  if (Date.now() - ultimaExpiracionProgramaciones < 30000) return;
+  if (expiracionProgramacionesEnCurso) return expiracionProgramacionesEnCurso;
+  ultimaExpiracionProgramaciones = Date.now();
+  expiracionProgramacionesEnCurso = db.query(`
+    UPDATE ventas
+       SET estado = 'VALIDADO',
+           estado_supgrab = 'no_conforme',
+           estado_grab = 'pendiente',
+           programacion_expira_at = NULL
+     WHERE LOWER(TRIM(COALESCE(estado_supgrab, ''))) = 'programado'
+       AND programacion_expira_at IS NOT NULL
+       AND programacion_expira_at <= NOW()
+  `).catch(error => {
+    console.error('[EXPIRAR PROGRAMACIONES]', error.message);
+  }).finally(() => {
+    expiracionProgramacionesEnCurso = null;
+  });
+  return expiracionProgramacionesEnCurso;
+}
+
 function actualizarDocumentoEnTexto(texto, documento) {
   const actual = String(texto || '').trim();
   const patron = /\b(?:DNI|CE|RUC)\s*:\s*\d+/gi;
@@ -395,26 +444,13 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
         }
       }
       const [yaUsado] = await conn.query(
-        `SELECT v.*, cv.estado_validacion, cv.fecha_validacion,
-                fechas.fecha_grabacion, fechas.fecha_seguimiento
-           FROM ventas v
-           LEFT JOIN (
-             SELECT vh.venta_id, vh.valor_nuevo AS estado_validacion, vh.created_at AS fecha_validacion
-               FROM venta_historial vh
-               JOIN (SELECT venta_id, MAX(id) max_id FROM venta_historial
-                       WHERE campo='estado' AND tipo='CAMBIO_VALIDACION' GROUP BY venta_id) ult ON ult.max_id=vh.id
-           ) cv ON cv.venta_id=v.id
-           LEFT JOIN (
-             SELECT venta_id,
-                    MAX(CASE WHEN campo='estado_grab' THEN created_at END) AS fecha_grabacion,
-                    MAX(CASE WHEN modulo='Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento') THEN created_at END) AS fecha_seguimiento
-               FROM venta_historial GROUP BY venta_id
-           ) fechas ON fechas.venta_id=v.id
-          WHERE TRIM(COALESCE(v.telefono1,'')) = ?
-          ORDER BY v.id DESC LIMIT 1 FOR UPDATE`,
+        `SELECT * FROM ventas
+          WHERE telefono1 = ?
+          ORDER BY id DESC LIMIT 1 FOR UPDATE`,
         [String(v.telefono1).trim()]
       );
-      if (yaUsado.length > 0 && !ventaEstaCaida(yaUsado[0])) {
+      const ultimaVenta = yaUsado.length ? await completarEstadoVentaCaida(conn, yaUsado[0]) : null;
+      if (ultimaVenta && !ventaEstaCaida(ultimaVenta)) {
         await conn.rollback();
         return res.status(400).json({ ok: false, mensaje: 'Este número ya fue registrado en otra venta. No puede ser usado nuevamente.' });
       }
@@ -489,16 +525,7 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
 
     // Una venta PROGRAMADA espera como máximo dos horas la decisión de
     // Sup. Grabaciones. Al vencer vuelve a la cola de Grabaciones.
-    await db.query(`
-      UPDATE ventas
-         SET estado = 'VALIDADO',
-             estado_supgrab = 'no_conforme',
-             estado_grab = 'pendiente',
-             programacion_expira_at = NULL
-       WHERE LOWER(TRIM(COALESCE(estado_supgrab, ''))) = 'programado'
-         AND programacion_expira_at IS NOT NULL
-         AND programacion_expira_at <= NOW()
-    `);
+    await expirarProgramacionesVencidas();
 
     const errores = validar([
       errorFecha(desde, 'desde'),
