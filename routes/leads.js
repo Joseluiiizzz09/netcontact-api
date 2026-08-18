@@ -1004,7 +1004,7 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
 router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
   let conn;
   try {
-    const { asesor_nombre, motivo } = req.body;
+    const { asesor_nombre, motivo, asesor_id_esperado, rotaciones_esperadas } = req.body;
     if (!asesor_nombre?.trim()) {
       return res.status(400).json({ ok: false, mensaje: 'Selecciona el nuevo asesor' });
     }
@@ -1018,6 +1018,23 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     }
     const lead = leads[0];
+    // Control optimista dentro del mismo bloqueo de fila: si otro Back Office
+    // rotó este lead después de que el cliente lo seleccionó, la segunda
+    // operación se rechaza en vez de volver a asignar información obsoleta.
+    const envioVersion = Object.prototype.hasOwnProperty.call(req.body, 'rotaciones_esperadas');
+    const esperadoId = asesor_id_esperado == null || asesor_id_esperado === '' ? null : Number(asesor_id_esperado);
+    const actualId = lead.asesor_id == null ? null : Number(lead.asesor_id);
+    const esperadas = Number(rotaciones_esperadas);
+    const actuales = Number(lead.rotaciones || 0);
+    if (envioVersion && (esperadoId !== actualId || !Number.isInteger(esperadas) || esperadas !== actuales)) {
+      await conn.rollback();
+      return res.status(409).json({
+        ok: false,
+        codigo: 'ROTACION_DESACTUALIZADA',
+        mensaje: `Este cliente ya fue actualizado por otro usuario${lead.asesor_nombre ? ` y ahora está asignado a ${lead.asesor_nombre}` : ''}. La lista se sincronizó; vuelve a seleccionarlo.`,
+        actual: { id:Number(lead.id), asesor_id:actualId, asesor:lead.asesor_nombre || '', rotaciones:actuales },
+      });
+    }
     const fechaLead = normalizarFechaAsignacion(lead.fecha);
     const principalId = await idLeadMasAntiguoDelDia(conn, lead.n1, fechaLead);
     if (principalId && Number(principalId) !== Number(lead.id)) {
@@ -1145,7 +1162,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
 
     await bloquearDuplicadosAlRotar(conn, lead);
     await conn.commit();
-    res.json({ ok: true, id: parseInt(req.params.id), asesor: asesorNuevo.nombre, historial, rotaciones:rotacionesReales, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
+    res.json({ ok: true, id: parseInt(req.params.id), asesor_id:asesorNuevo.id, asesor: asesorNuevo.nombre, historial, rotaciones:rotacionesReales, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
   } catch (e) {
     if (conn) await conn.rollback().catch(() => {});
     console.error(e);
