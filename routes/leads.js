@@ -274,6 +274,12 @@ async function bloquearOtrasCampanasDelDia(conn, lead) {
   `, [horaPeruAhora(), principalId || lead.id, n1, fecha, creadoEn, creadoEn]);
 }
 
+// Numeros/dia con una rotacion en curso ahora mismo (memoria del proceso).
+// Sirve para rechazar de inmediato una segunda rotacion concurrente sobre el
+// mismo grupo de duplicados en vez de competir por los mismos locks de fila
+// en bloquearDuplicadosAlRotar, que en hora pico terminaba en deadlocks.
+const gruposRotandose = new Set();
+
 async function bloquearDuplicadosAlRotar(conn, lead) {
   const n1 = normalizarN1(lead?.n1);
   const fecha = normalizarFechaAsignacion(lead?.fecha);
@@ -1048,11 +1054,25 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
 // Preserva el historial completo con asesorAnterior, rotadoPor y tipifBackAntes.
 router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
   let conn;
+  let claveGrupoRotando = null;
   try {
     const { asesor_nombre, motivo, asesor_id_esperado, rotaciones_esperadas } = req.body;
     if (!asesor_nombre?.trim()) {
       return res.status(400).json({ ok: false, mensaje: 'Selecciona el nuevo asesor' });
     }
+
+    // Bloqueo rapido en memoria, antes de abrir transaccion: si otro Back
+    // Office ya esta rotando este mismo numero/dia en este instante, se
+    // rechaza al toque en vez de competir por los mismos locks de fila.
+    const [preLead] = await db.query(`SELECT n1, fecha FROM leads WHERE id = ?`, [req.params.id]);
+    if (!preLead.length) {
+      return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    }
+    claveGrupoRotando = `${normalizarN1(preLead[0].n1)}|${normalizarFechaAsignacion(preLead[0].fecha)}`;
+    if (gruposRotandose.has(claveGrupoRotando)) {
+      return res.status(409).json({ ok: false, mensaje: 'Este número ya se está rotando en este momento. Espera un segundo e inténtalo de nuevo.' });
+    }
+    gruposRotandose.add(claveGrupoRotando);
 
     conn = await db.getConnection();
     await conn.beginTransaction();
@@ -1213,6 +1233,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al rotar el lead' });
   } finally {
+    if (claveGrupoRotando) gruposRotandose.delete(claveGrupoRotando);
     if (conn) conn.release();
   }
 });
