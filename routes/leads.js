@@ -1444,6 +1444,14 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       await db.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaPeruAhora(), lead.id]);
       return res.status(409).json({ ok:false, tipif_vend:'NO ROTAR', mensaje:'Solo el primer registro del numero en el dia puede recibir tipificacion' });
     }
+    // Mismo limite que ya bloquea la rotacion: si SIN COBERTURA ya acumulo 2
+    // rotaciones hoy, la tipificacion queda protegida y no puede cambiarse a
+    // otra cosa -- evita que un asesor posterior la tape (p.ej. con NO
+    // CONTESTA) y la deje visualmente inconsistente con el bloqueo real.
+    const limiteSinCobertura = resumenSinCoberturaDia(lead, lead.historial);
+    if (limiteSinCobertura.aplica && limiteSinCobertura.rotaciones >= 2 && tipifNormalizada !== 'SIN COBERTURA') {
+      return res.status(409).json({ ok:false, mensaje:'Este numero alcanzo el limite de 2 rotaciones por SIN COBERTURA hoy. Su tipificacion queda protegida en SIN COBERTURA.' });
+    }
     const obsActual = String(lead.obs_asesor || '').trim();
     let obsFinal = documentoTexto && !obsActual.toUpperCase().includes(documentoTexto.toUpperCase())
       ? (obsActual ? `${obsActual} | ${documentoTexto}` : documentoTexto)
