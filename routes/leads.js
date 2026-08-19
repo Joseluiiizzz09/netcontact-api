@@ -207,21 +207,6 @@ function resumenTipificadoDia(lead, historial, fecha = fechaPeruHoy()) {
   return { aplica: tuvoTipificacion, rotaciones };
 }
 
-function resumenSinCoberturaDia(lead, historial, fecha = fechaPeruHoy()) {
-  const hist = historialArray(historial);
-  const fechaLead = normalizarFechaAsignacion(lead?.fecha);
-  const tuvoSinCobertura = (
-    String(lead?.tipif_vend || '').trim().toUpperCase() === 'SIN COBERTURA'
-    && fechaLead === fecha
-  ) || hist.some(h => normalizarFechaAsignacion(h?.fecha) === fecha && [h?.tipif, h?.tipif_vend, h?.tipifVendAntes]
-    .some(v => String(v || '').trim().toUpperCase() === 'SIN COBERTURA'));
-  const rotaciones = hist.filter(h =>
-    (String(h?.tipo || '').trim().toUpperCase() === 'ROTACION' || Boolean(h?.reasignadoPor))
-    && normalizarFechaAsignacion(h?.fecha) === fecha
-  ).length;
-  return { aplica: tuvoSinCobertura, rotaciones };
-}
-
 async function existeTipificadoOtraCampana(conn, n1, fecha, campana, excluirId = null) {
   const params = [normalizarN1(n1), fecha];
   let excluirSql = '';
@@ -1106,11 +1091,8 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       await conn.rollback();
       return res.status(409).json({ ok:false, mensaje:'Numero prohibido: NO ROTAR. Solo se rota el primer registro del numero en el dia.' });
     }
-    const limiteDiario = resumenSinCoberturaDia(lead, lead.historial);
-    if (limiteDiario.aplica && limiteDiario.rotaciones >= 2) {
-      await conn.rollback();
-      return res.status(409).json({ ok:false, mensaje:'SIN COBERTURA permite un maximo de 2 rotaciones por dia' });
-    }
+    // SIN COBERTURA se rota sin limite -- solo se libera al concretarse una
+    // venta real; hasta entonces se mantiene fija en la base principal.
     const n1Clean = String(lead.n1 || '').trim();
     const [ventasProtegidas] = await conn.query(
       `SELECT v.id, v.estado, v.estado_grab, v.motivo_seguimiento,
@@ -1309,10 +1291,6 @@ router.patch('/:id', auth(ROLES_BO), async (req, res) => {
     }
 
     const asesorCambia = !!asesor_nombre && asesor_nombre !== (lead.asesor_nombre || '');
-    const limiteDiario = resumenSinCoberturaDia(lead, lead.historial);
-    if (asesorCambia && limiteDiario.aplica && limiteDiario.rotaciones >= 2) {
-      return res.status(409).json({ ok:false, mensaje:'SIN COBERTURA permite un maximo de 2 rotaciones por dia' });
-    }
     let reasignadoPorNombre = '';
     if (asesorCambia) {
       reasignadoPorNombre = await nombreUsuario(req.user.id);
@@ -1444,14 +1422,10 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       await db.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaPeruAhora(), lead.id]);
       return res.status(409).json({ ok:false, tipif_vend:'NO ROTAR', mensaje:'Solo el primer registro del numero en el dia puede recibir tipificacion' });
     }
-    // Mismo limite que ya bloquea la rotacion: si SIN COBERTURA ya acumulo 2
-    // rotaciones hoy, la tipificacion queda protegida y no puede cambiarse a
-    // otra cosa -- evita que un asesor posterior la tape (p.ej. con NO
-    // CONTESTA) y la deje visualmente inconsistente con el bloqueo real.
-    const limiteSinCobertura = resumenSinCoberturaDia(lead, lead.historial);
-    if (limiteSinCobertura.aplica && limiteSinCobertura.rotaciones >= 2 && tipifNormalizada !== 'SIN COBERTURA') {
-      return res.status(409).json({ ok:false, mensaje:'Este numero alcanzo el limite de 2 rotaciones por SIN COBERTURA hoy. Su tipificacion queda protegida en SIN COBERTURA.' });
-    }
+    // El asesor puede tipificar libremente un lead que paso por SIN
+    // COBERTURA (para dejar constancia en su propia base); la base
+    // principal lo sigue mostrando fijo en SIN COBERTURA del lado del
+    // frontend hasta que exista una venta real -- no se bloquea aqui.
     const obsActual = String(lead.obs_asesor || '').trim();
     let obsFinal = documentoTexto && !obsActual.toUpperCase().includes(documentoTexto.toUpperCase())
       ? (obsActual ? `${obsActual} | ${documentoTexto}` : documentoTexto)
