@@ -150,6 +150,29 @@ function historialArray(valor) {
   try { return JSON.parse(valor || '[]'); } catch { return []; }
 }
 
+function normalizarNombreAsesor(valor) {
+  return String(valor || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+}
+
+// Devuelve solo asignaciones que no fueron retiradas posteriormente. Un retiro
+// deja de tener efecto si el mismo asesor recibe nuevamente el lead después.
+function asignacionesVigentesHistorial(valor) {
+  const eventos = historialArray(valor);
+  const ultimoRetiro = new Map();
+  eventos.forEach((h, i) => {
+    if (String(h?.tipo || '').trim().toUpperCase() !== 'QUITAR_ASIGNACION') return;
+    const nombre = normalizarNombreAsesor(h?.asesorQuitado || h?.asesor_quitado);
+    if (nombre) ultimoRetiro.set(nombre, i);
+  });
+  return eventos.filter((h, i) => {
+    const tipo = String(h?.tipo || '').trim().toUpperCase();
+    const nombre = normalizarNombreAsesor(h?.asesor);
+    return nombre && !['TIPIF_VEND','TIPIF_BACK','DERIVADO','QUITAR_ASIGNACION'].includes(tipo)
+      && i > (ultimoRetiro.get(nombre) ?? -1);
+  });
+}
+
 // Cada asignacion real a un asesor cuenta como una rotacion, incluida la
 // asignacion inicial. Se excluyen carga, tipificaciones y eventos auxiliares.
 function contarRotacionesHistorial(valor) {
@@ -1564,13 +1587,15 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
 
     // Localiza la asignación a eliminar (ignora entradas que no son asignaciones).
     const idx = historial.findIndex(h =>
-      h && h.asesor === asesor && (h.hora || '') === (hora || '') && (h.fecha || '') === (fecha || '') &&
-      h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND');
+      h && normalizarNombreAsesor(h.asesor) === normalizarNombreAsesor(asesor)
+      && (h.hora || '') === (hora || '') && (h.fecha || '') === (fecha || '')
+      && !['TIPIF_BACK','DERIVADO','TIPIF_VEND','QUITAR_ASIGNACION']
+        .includes(String(h.tipo || '').trim().toUpperCase()));
     if (idx < 0) { await conn.rollback(); return res.status(404).json({ ok: false, mensaje: 'Asignación no encontrada' }); }
 
     const eliminado = historial[idx];
     const nuevoHist = historial.filter((_, i) => i !== idx);
-    const eraActual = (lead.asesor_nombre || '') === (eliminado.asesor || '');
+    const eraActual = normalizarNombreAsesor(lead.asesor_nombre) === normalizarNombreAsesor(eliminado.asesor);
 
     const [actores] = await conn.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
     const actor = actores[0] || {};
@@ -1583,7 +1608,7 @@ router.patch('/:id/eliminar-asignacion', auth(ROLES_BO), async (req, res) => {
 
     const rotacionesReales = contarRotacionesHistorial(nuevoHist);
     if (eraActual) {
-      const asignaciones = nuevoHist.filter(h => h.asesor && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND');
+      const asignaciones = asignacionesVigentesHistorial(nuevoHist);
       const previo = asignaciones[asignaciones.length - 1];
       if (previo) {
         const [u] = await conn.query(`SELECT id, nombre FROM usuarios WHERE nombre = ? LIMIT 1`, [previo.asesor]);
