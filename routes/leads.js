@@ -1449,7 +1449,10 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
         ) fechas ON fechas.venta_id=v.id
         WHERE TRIM(v.telefono1)=TRIM(?) ORDER BY v.id DESC LIMIT 1
       `, [lead.n1 || '']);
-      if (tipificacionInternaVenta(ventasCRM[0])) {
+      // VENTA CAIDA no bloquea: el asesor puede volver a tipificar (p.ej. si
+      // recupera la venta), igual que ya se permite al rotar este numero.
+      const tipifInternaActual = tipificacionInternaVenta(ventasCRM[0]);
+      if (tipifInternaActual && tipifInternaActual.tipificacion !== 'VENTA CAIDA') {
         return res.status(409).json({ ok:false, mensaje:'Este lead tiene una tipificacion interna exclusiva actualizada por el CRM' });
       }
     }
