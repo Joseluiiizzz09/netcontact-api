@@ -543,6 +543,8 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                ph.fecha_programado,
                ph_prog.estado_prog, ph_prog.usuario_prog, ph_prog.fecha_prog,
                ph_sup.fecha_sup_resultado,
+               ph_inst.fecha_instalado,
+               ph_caida.fecha_caida,
                COALESCE(LOWER(cv.estado_validacion), 'venta') AS estado_validacion
                FROM ventas v
                LEFT JOIN usuarios u ON v.asesor_id = u.id
@@ -553,6 +555,23 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                  WHERE campo = 'estado' AND UPPER(valor_nuevo) = 'PROGRAMADO'
                  GROUP BY venta_id
                ) ph ON ph.venta_id = v.id
+               LEFT JOIN (
+                 -- Ultima vez que el estado paso a un valor de instalacion.
+                 SELECT venta_id, MAX(created_at) AS fecha_instalado
+                 FROM venta_historial
+                 WHERE campo = 'estado'
+                   AND REPLACE(UPPER(valor_nuevo), '_', ' ') IN ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION')
+                 GROUP BY venta_id
+               ) ph_inst ON ph_inst.venta_id = v.id
+               LEFT JOIN (
+                 -- Ultima vez que el estado paso a un valor de caida/rechazo.
+                 SELECT venta_id, MAX(created_at) AS fecha_caida
+                 FROM venta_historial
+                 WHERE campo = 'estado'
+                   AND REPLACE(UPPER(valor_nuevo), '_', ' ') IN
+                       ('CAIDA', 'RECHAZO', 'RECHAZO CAMPO', 'RECHAZO MESA', 'RECHAZADA', 'RECHAZADO', 'ANULADA', 'SERVICIO ACTIVO')
+                 GROUP BY venta_id
+               ) ph_caida ON ph_caida.venta_id = v.id
                LEFT JOIN (
                  SELECT h1.venta_id, h1.valor_nuevo AS estado_prog,
                         h1.usuario_nombre AS usuario_prog, h1.created_at AS fecha_prog
