@@ -10,7 +10,7 @@ const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositi
 const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
 const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz','esperando_tercero','corregir_sec'];
 const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado','programado','conforme','no_conforme','audio_subido'];
-const TRAMOS_SEGUIMIENTO_OK = ['AM 1','AM 2','PM 1','PM 2','PM 3'];
+const TRAMOS_SEGUIMIENTO_OK = ['AM','PM'];
 const ESTADOS_VALIDOS_POST  = ['VENTA'];
 const ESTADOS_VALIDOS_PATCH = [
   'VENTA','GRABADO','APROBADO','VALIDADO','EN_EJECUCION',
@@ -1342,6 +1342,66 @@ router.patch('/:id/datos', auth(['supervisor','jefatura','seguimiento','usuarios
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar los datos de la venta.' });
   } finally {
     conn.release();
+  }
+});
+
+// ===== POST /:id/enviar-seguimiento-whatsapp =====
+// Envía la plantilla 'seguimiento_agosto' (cuenta SEGUIMIENTO de leads-api) con
+// nombre, día/mes de fecha_programada y horario según tramo_seguimiento (AM/PM).
+router.post('/:id/enviar-seguimiento-whatsapp', auth(['seguimiento', 'jefatura']), async (req, res) => {
+  const ventaId = Number(req.params.id);
+  if (!Number.isInteger(ventaId) || ventaId <= 0)
+    return res.status(400).json({ ok: false, mensaje: 'ID de venta inválido.' });
+
+  try {
+    const [rows] = await db.query(
+      `SELECT id, nombre, telefono1, fecha_programada, tramo_seguimiento FROM ventas WHERE id = ? LIMIT 1`,
+      [ventaId]
+    );
+    const venta = rows[0];
+    if (!venta) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada.' });
+    if (!venta.telefono1) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene teléfono registrado.' });
+    if (!venta.fecha_programada) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene fecha programada.' });
+
+    const tramo = String(venta.tramo_seguimiento || '').trim().toUpperCase();
+    const horaTexto = tramo === 'AM' ? '9 AM a 1 PM' : tramo === 'PM' ? '2 PM a 6 PM' : null;
+    if (!horaTexto) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene tramo de seguimiento (AM/PM) definido.' });
+
+    const fecha = new Date(venta.fecha_programada);
+    if (Number.isNaN(fecha.getTime())) return res.status(400).json({ ok: false, mensaje: 'Fecha programada inválida.' });
+    const dia = `${String(fecha.getDate()).padStart(2, '0')}/${String(fecha.getMonth() + 1).padStart(2, '0')}`;
+
+    let data;
+    try {
+      const resp = await fetch(`${process.env.LEADS_API_URL}/api/interno/enviar-mensaje-personalizado`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Internal-Key': process.env.INTERNAL_KRONO_KEY },
+        body: JSON.stringify({
+          cuenta: 'SEGUIMIENTO',
+          telefono: venta.telefono1,
+          plantilla: 'seguimiento_agosto',
+          valores: { nombre: venta.nombre, dia, hora: horaTexto },
+        }),
+      });
+      data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.ok) {
+        return res.status(502).json({ ok: false, mensaje: data.error || 'No se pudo enviar el mensaje de WhatsApp.' });
+      }
+    } catch (e) {
+      console.error('[enviar-seguimiento-whatsapp] Error de conexión con leads-api:', e.message);
+      return res.status(502).json({ ok: false, mensaje: 'No se pudo contactar el servicio de WhatsApp.' });
+    }
+
+    const actor = await obtenerActor(db, req.user.id);
+    await registrarHistorial(db, ventaId, actor, {
+      tipo: 'WHATSAPP',
+      descripcion: `Mensaje de WhatsApp (seguimiento) enviado a ${venta.telefono1} — horario ${horaTexto}, fecha ${dia}`,
+    });
+
+    res.json({ ok: true, mensaje: 'Mensaje de WhatsApp enviado.', whatsapp_message_id: data.whatsapp_message_id || null });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al enviar el mensaje de WhatsApp.' });
   }
 });
 
