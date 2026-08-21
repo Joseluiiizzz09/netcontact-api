@@ -1528,6 +1528,9 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     const [rows] = await db.query(`SELECT * FROM leads WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     const lead = rows[0];
+    const [ciclosTipif] = await db.query(`SELECT id,numero_ciclo,tipo FROM lead_ciclos_venta WHERE lead_id=? AND estado='ABIERTO' ORDER BY id DESC LIMIT 1`, [lead.id]);
+    const cicloTipif = ciclosTipif[0] || null;
+    const datosCicloTipif = cicloTipif ? { cicloId:cicloTipif.id, numeroCiclo:cicloTipif.numero_ciclo, subtipo:cicloTipif.tipo } : {};
     const idPrincipalDia = await idLeadMasAntiguoDelDia(db, lead.n1, normalizarFechaAsignacion(lead.fecha));
     if (idPrincipalDia && Number(idPrincipalDia) !== Number(lead.id)) {
       await db.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaPeruAhora(), lead.id]);
@@ -1566,8 +1569,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       // VENTA CAIDA no bloquea: el asesor puede volver a tipificar (p.ej. si
       // recupera la venta), igual que ya se permite al rotar este numero.
       const tipifInternaActual = tipificacionInternaVenta(ventasCRM[0]);
-      const [ciclosAbiertos] = await db.query(`SELECT id FROM lead_ciclos_venta WHERE lead_id=? AND estado='ABIERTO' LIMIT 1`, [req.params.id]);
-      if (tipifInternaActual && tipifInternaActual.tipificacion !== 'VENTA CAIDA' && !ciclosAbiertos.length) {
+      if (tipifInternaActual && tipifInternaActual.tipificacion !== 'VENTA CAIDA' && !cicloTipif) {
         return res.status(409).json({ ok:false, mensaje:'Este lead tiene una tipificacion interna exclusiva actualizada por el CRM' });
       }
     }
@@ -1587,7 +1589,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // Titular actual, o cargos de gestión (backoffice, etc.): actualiza la tipif vigente
     // del titular + registra el evento (con ts) a nombre del titular actual.
     if (!esAsesor || esActual) {
-      registrarTipifEvent(historial, lead.asesor_nombre || '', tipifNormalizada, documentoTexto ? { documento:documentoTexto } : {});
+      registrarTipifEvent(historial, lead.asesor_nombre || '', tipifNormalizada, { ...datosCicloTipif, ...(documentoTexto ? { documento:documentoTexto } : {}) });
       await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
         [tipifNormalizada, horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
       if (esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
@@ -1608,7 +1610,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
         if (h && h.tipo !== 'TIPIF_BACK' && h.tipo !== 'DERIVADO' && h.tipo !== 'TIPIF_VEND') { ultimaAsig = h; break; }
       }
       if (ultimaAsig && (ultimaAsig.asesor || '').trim() === miNombre) {
-        registrarTipifEvent(historial, miNombre, tipifNormalizada, documentoTexto ? { documento:documentoTexto } : {});
+        registrarTipifEvent(historial, miNombre, tipifNormalizada, { ...datosCicloTipif, ...(documentoTexto ? { documento:documentoTexto } : {}) });
         await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
           [tipifNormalizada, horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
         if (esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
@@ -1628,7 +1630,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     // al cliente; la base tomará esa como la más reciente.
     historial[idx].tipifVendAntes = tipifNormalizada;
     if (documentoTexto) historial[idx].documento = documentoTexto;
-    registrarTipifEvent(historial, miNombre, tipifNormalizada, documentoTexto ? { documento:documentoTexto } : {});
+    registrarTipifEvent(historial, miNombre, tipifNormalizada, { ...datosCicloTipif, ...(documentoTexto ? { documento:documentoTexto } : {}) });
     await db.query(`UPDATE leads SET historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
       [JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
     if (esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
