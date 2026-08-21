@@ -1048,11 +1048,9 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
 router.post('/:id/otra-direccion', auth(ROLES_BO), async (req, res) => {
   let conn;
   try {
-    const { asesor_nombre, direccion, distrito, motivo } = req.body;
+    const { asesor_nombre, motivo } = req.body;
     const errores = validar([
       errorTexto(asesor_nombre, 'asesor_nombre', { requerido:true, max:150 }),
-      errorTexto(direccion, 'direccion', { requerido:true, max:1000 }),
-      errorTexto(distrito, 'distrito', { requerido:true, max:100 }),
       errorTexto(motivo, 'motivo', { max:1000 }),
     ]);
     if (errores) return res.status(400).json({ ok:false, mensaje:errores[0] });
@@ -1083,24 +1081,24 @@ router.post('/:id/otra-direccion', auth(ROLES_BO), async (req, res) => {
       INSERT INTO lead_ciclos_venta
         (lead_id,numero_ciclo,tipo,estado,asesor_id,asesor_nombre,direccion,distrito,motivo,creado_por_id,creado_por_nombre,creado_por_usuario,creado_desde_ip)
       VALUES (?,?,'OTRA_DIRECCION','ABIERTO',?,?,?,?,?,?,?,?,?)
-    `, [lead.id, numeroCiclo, asesor.id, asesor.nombre, direccion.trim(), distrito.trim(), String(motivo || '').trim(), actor.id, actor.nombre, actor.usuario || '', ip]);
+    `, [lead.id, numeroCiclo, asesor.id, asesor.nombre, '', '', String(motivo || '').trim(), actor.id, actor.nombre, actor.usuario || '', ip]);
     let historial = historialArray(lead.historial);
     const fecha = fechaPeruHoy();
     const hora = horaPeruAhora();
     historial.push({
       tipo:'CICLO_VENTA', subtipo:'OTRA_DIRECCION', accion:'ASIGNACION',
       cicloId:ciclo.insertId, numeroCiclo, asesor:asesor.nombre,
-      asesorAnterior:lead.asesor_nombre || '', direccion:direccion.trim(), distrito:distrito.trim(),
+      asesorAnterior:lead.asesor_nombre || '',
       tipificacionAnterior:lead.tipif_vend || '', motivo:String(motivo || '').trim(),
       realizadoPor:actor.nombre, realizadoPorUsuario:actor.usuario || '', realizadoPorId:actor.id,
       ip, fecha, hora, ts:Date.now(),
     });
     const rotacionesReales = contarRotacionesHistorial(historial);
     await conn.query(`
-      UPDATE leads SET asesor_id=?, asesor_nombre=?, direccion=?, distrito=?, hora_asig=?,
+      UPDATE leads SET asesor_id=?, asesor_nombre=?, hora_asig=?,
         sin_asignar=0, tipif_vend='', tipif_hora='', obs_asesor='', historial=?, rotaciones=?
       WHERE id=?
-    `, [asesor.id, asesor.nombre, direccion.trim(), distrito.trim(), hora, JSON.stringify(historial), rotacionesReales, lead.id]);
+    `, [asesor.id, asesor.nombre, hora, JSON.stringify(historial), rotacionesReales, lead.id]);
     await conn.commit();
     res.json({ ok:true, ciclo_id:ciclo.insertId, numero_ciclo:numeroCiclo, asesor_id:asesor.id, asesor:asesor.nombre, historial, mensaje:`Venta ${numeroCiclo} — OTRA DIRECCIÓN habilitada para ${asesor.nombre}` });
   } catch (e) {
