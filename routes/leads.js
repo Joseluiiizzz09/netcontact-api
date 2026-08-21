@@ -464,6 +464,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       // Una venta caída vuelve a pertenecer al lead y puede ser rotada a otro
       // vendedor. Las ventas vigentes continúan proyectando al vendedor de venta.
       const cicloAbierto = Number(l.ciclo_abierto_id || 0) > 0;
+      // El asesor necesita ver el ciclo nuevo como pendiente para poder
+      // tipificarlo. Back Data conserva el estado comercial cerrado del lead.
+      const cicloAbiertoParaAsesor = cicloAbierto && Boolean(visorAsesorId);
       const ventaCerrada = !cicloAbierto && ventaConfirmada === 1 && ventaAsesorId && tipifInterna?.tipificacion !== 'VENTA CAIDA';
       let obsAsesorPersonal = obsAsesor;
       let obsBackPersonal = l.obs_back || '';
@@ -497,16 +500,16 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         campana: normalizarCampana(l.campana) || l.campana,
         tipif_vend: tipifVisible,
         rotaciones: rotacionesReales,
-        venta_confirmada: cicloAbierto ? 0 : ventaConfirmada,
+        venta_confirmada: cicloAbiertoParaAsesor ? 0 : ventaConfirmada,
         venta_asesor_id: ventaAsesorId,
         venta_asesor_nombre: ventaAsesorNombre,
         venta_documento: ventaInfo?.venta_documento || '',
         venta_tipo_doc: ventaInfo?.venta_tipo_doc || '',
-        tipif_interna: cicloAbierto ? '' : (tipifInterna?.tipificacion || ''),
-        tipif_interna_color: cicloAbierto ? '' : (tipifInterna?.color || ''),
-        tipif_interna_area: cicloAbierto ? '' : (tipifInterna?.area || ''),
-        tipif_interna_fecha: cicloAbierto ? '' : (tipifInterna?.fecha || ''),
-        tipif_interna_motivo: cicloAbierto ? '' : (tipifInterna?.motivo || ''),
+        tipif_interna: cicloAbiertoParaAsesor ? '' : (tipifInterna?.tipificacion || ''),
+        tipif_interna_color: cicloAbiertoParaAsesor ? '' : (tipifInterna?.color || ''),
+        tipif_interna_area: cicloAbiertoParaAsesor ? '' : (tipifInterna?.area || ''),
+        tipif_interna_fecha: cicloAbiertoParaAsesor ? '' : (tipifInterna?.fecha || ''),
+        tipif_interna_motivo: cicloAbiertoParaAsesor ? '' : (tipifInterna?.motivo || ''),
         ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
         obs_asesor_personal: obsAsesorPersonal,
