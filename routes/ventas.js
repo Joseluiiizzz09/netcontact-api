@@ -513,6 +513,32 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
   }
 });
 
+// Listado ligero exclusivo de Validación. Evita las subconsultas operativas de
+// Programación, Seguimiento, WhatsApp y Grabaciones que esta pantalla no usa.
+router.get('/validacion-listado', auth(['validacion','jefatura']), async (req, res) => {
+  try {
+    const [data] = await db.query(`
+      SELECT v.*, u.nombre AS asesor_nombre, u.sala,
+             COALESCE(LOWER((
+               SELECT vh.valor_nuevo
+                 FROM venta_historial vh
+                WHERE vh.venta_id = v.id
+                  AND vh.campo = 'estado'
+                  AND vh.tipo = 'CAMBIO_VALIDACION'
+                ORDER BY vh.id DESC
+                LIMIT 1
+             )), 'venta') AS estado_validacion
+        FROM ventas v
+        LEFT JOIN usuarios u ON v.asesor_id = u.id
+       ORDER BY v.created_at DESC
+    `);
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error('[GET /ventas/validacion-listado]', e.message || e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener ventas para Validación' });
+  }
+});
+
 // ===== GET /api/ventas =====
 router.get('/', auth(ROLES_VENTAS), async (req, res) => {
   try {
@@ -1036,7 +1062,16 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
     await conn.commit();
 
     const [ventaRows] = await conn.query(`
-      SELECT v.*, u.nombre AS asesor_nombre, u.sala
+      SELECT v.*, u.nombre AS asesor_nombre, u.sala,
+             COALESCE(LOWER((
+               SELECT vh.valor_nuevo
+                 FROM venta_historial vh
+                WHERE vh.venta_id = v.id
+                  AND vh.campo = 'estado'
+                  AND vh.tipo = 'CAMBIO_VALIDACION'
+                ORDER BY vh.id DESC
+                LIMIT 1
+             )), 'venta') AS estado_validacion
         FROM ventas v
         LEFT JOIN usuarios u ON v.asesor_id = u.id
        WHERE v.id = ?
