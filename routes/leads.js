@@ -1041,7 +1041,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
   let conn;
   let claveGrupoRotando = null;
   try {
-    const { asesor_nombre, motivo, asesor_id_esperado, rotaciones_esperadas } = req.body;
+    const { asesor_nombre, motivo, asesor_id_esperado, rotaciones_esperadas, reactivacion_manual } = req.body;
     if (!asesor_nombre?.trim()) {
       return res.status(400).json({ ok: false, mensaje: 'Selecciona el nuevo asesor' });
     }
@@ -1068,6 +1068,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
     }
     const lead = leads[0];
+    const historialInicial = historialArray(lead.historial);
     // Control optimista dentro del mismo bloqueo de fila: si otro Back Office
     // rotó este lead después de que el cliente lo seleccionó, la segunda
     // operación se rechaza en vez de volver a asignar información obsoleta.
@@ -1144,21 +1145,35 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       return res.status(404).json({ ok: false, mensaje: 'Asesor no encontrado o inactivo' });
     }
     const asesorNuevo = usuarios[0];
-    if (lead.asesor_id === asesorNuevo.id) {
+    const esMismoAsesor = Number(lead.asesor_id) === Number(asesorNuevo.id);
+    const asignacionesDelMismo = historialInicial.filter(h =>
+      h?.asesor
+      && !['TIPIF_VEND','TIPIF_BACK','DERIVADO','QUITAR_ASIGNACION'].includes(String(h?.tipo || '').toUpperCase())
+      && normalizarNombreAsesor(h.asesor) === normalizarNombreAsesor(asesorNuevo.nombre)
+    );
+    const ultimaDelMismo = asignacionesDelMismo.reduce((ultima, actual) => {
+      const marcaUltima = `${normalizarFechaAsignacion(ultima?.fecha)} ${String(ultima?.hora || '').padStart(5, '0')}`;
+      const marcaActual = `${normalizarFechaAsignacion(actual?.fecha)} ${String(actual?.hora || '').padStart(5, '0')}`;
+      return !ultima || marcaActual >= marcaUltima ? actual : ultima;
+    }, null);
+    const esReactivacionManual = reactivacion_manual === true
+      && esMismoAsesor
+      && ultimaDelMismo
+      && normalizarFechaAsignacion(ultimaDelMismo.fecha) < fechaPeruHoy();
+    if (esMismoAsesor && !esReactivacionManual) {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: 'Selecciona un asesor diferente al actual' });
     }
 
     const rotadorNombre = await nombreUsuario(req.user.id);
 
-    let historial = [];
-    try { historial = JSON.parse(lead.historial || '[]'); } catch { historial = []; }
+    const historial = [...historialInicial];
     const asesorYaUsado = historial.some(h =>
       [h?.asesor, h?.asesorAnterior].some(nombre =>
         String(nombre || '').trim().toUpperCase() === String(asesorNuevo.nombre || '').trim().toUpperCase()
       )
     );
-    if (asesorYaUsado) {
+    if (asesorYaUsado && !esReactivacionManual) {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: 'Este número ya fue asignado anteriormente a ese asesor' });
     }
@@ -1176,7 +1191,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     const fecha = fechaPeruHoy();
     const hora  = horaPeruAhora();
     historial.push({
-      tipo:          'ROTACION',
+      tipo:          esReactivacionManual ? 'REACTIVACION_MANUAL' : 'ROTACION',
       asesor:        asesorNuevo.nombre,
       asesorAnterior: lead.asesor_nombre || 'Sin asignar',
       rotadoPor:     rotadorNombre,
@@ -1192,7 +1207,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       })(),
       hora,
       fecha,
-      motivo: String(motivo || '').trim() || 'Rotacion manual',
+      motivo: String(motivo || '').trim() || (esReactivacionManual ? 'Reactivacion manual para la base de hoy' : 'Rotacion manual'),
     });
 
     // Actualiza el registro existente: no crea duplicados.
@@ -1209,7 +1224,18 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
 
     await bloquearDuplicadosAlRotar(conn, lead);
     await conn.commit();
-    res.json({ ok: true, id: parseInt(req.params.id), asesor_id:asesorNuevo.id, asesor: asesorNuevo.nombre, historial, rotaciones:rotacionesReales, mensaje: `Registro rotado a ${asesorNuevo.nombre}` });
+    res.json({
+      ok: true,
+      id: parseInt(req.params.id),
+      asesor_id:asesorNuevo.id,
+      asesor: asesorNuevo.nombre,
+      historial,
+      rotaciones:rotacionesReales,
+      reactivado:esReactivacionManual,
+      mensaje: esReactivacionManual
+        ? `Lead reactivado para ${asesorNuevo.nombre} en la base de hoy`
+        : `Registro rotado a ${asesorNuevo.nombre}`,
+    });
   } catch (e) {
     if (conn) await conn.rollback().catch(() => {});
     console.error(e);
