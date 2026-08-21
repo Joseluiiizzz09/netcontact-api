@@ -1157,7 +1157,6 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       return !ultima || marcaActual >= marcaUltima ? actual : ultima;
     }, null);
     const esReactivacionManual = reactivacion_manual === true
-      && esMismoAsesor
       && ultimaDelMismo
       && normalizarFechaAsignacion(ultimaDelMismo.fecha) < fechaPeruHoy();
     if (esMismoAsesor && !esReactivacionManual) {
