@@ -545,6 +545,7 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                ph_sup.fecha_sup_resultado,
                ph_inst.fecha_instalado,
                ph_caida.fecha_caida,
+               ph_wa.fecha_whatsapp_enviado,
                COALESCE(LOWER(cv.estado_validacion), 'venta') AS estado_validacion
                FROM ventas v
                LEFT JOIN usuarios u ON v.asesor_id = u.id
@@ -572,6 +573,12 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                        ('CAIDA', 'RECHAZO', 'RECHAZO CAMPO', 'RECHAZO MESA', 'RECHAZADA', 'RECHAZADO', 'ANULADA', 'SERVICIO ACTIVO')
                  GROUP BY venta_id
                ) ph_caida ON ph_caida.venta_id = v.id
+               LEFT JOIN (
+                 SELECT venta_id, MAX(created_at) AS fecha_whatsapp_enviado
+                 FROM venta_historial
+                 WHERE tipo = 'WHATSAPP'
+                 GROUP BY venta_id
+               ) ph_wa ON ph_wa.venta_id = v.id
                LEFT JOIN (
                  SELECT h1.venta_id, h1.valor_nuevo AS estado_prog,
                         h1.usuario_nombre AS usuario_prog, h1.created_at AS fecha_prog
