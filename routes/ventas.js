@@ -1149,7 +1149,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       String(estado_supgrab).toLowerCase() === 'conforme'
     ) {
       const estadoActual = String(rows[0].estado || '').toUpperCase();
-      const PRE_EJECUCION = new Set(['VENTA','GRABADO','APROBADO','VALIDADO']);
+      const PRE_EJECUCION = new Set(['VENTA','GRABADO','APROBADO','VALIDADO','PROGRAMADO']);
       if (!PRE_EJECUCION.has(estadoActual)) _estadoAplicar = undefined;
     }
     // Guardia no_conforme: solo revertir a VALIDADO si la venta está en VALIDADO o APROBADO
