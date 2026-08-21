@@ -524,6 +524,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     // las posteriores se proyectan como NO ROTAR y comparten su contador.
     const gruposPorDia = new Map();
     for (const lead of salida) {
+      if (lead.lead_origen_id) continue;
       const clave = `${claveIdentidadLead(lead)}|${normalizarFechaAsignacion(lead.fecha)}`;
       if (!gruposPorDia.has(clave)) gruposPorDia.set(clave, []);
       gruposPorDia.get(clave).push(lead);
@@ -1646,7 +1647,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       registrarTipifEvent(historial, lead.asesor_nombre || '', tipifNormalizada, { ...datosCicloTipif, ...(documentoTexto ? { documento:documentoTexto } : {}) });
       await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
         [tipifNormalizada, horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
-      if (esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
+      if (!lead.lead_origen_id && esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
       return res.json({ ok: true, mensaje: 'Tipificación guardada' });
     }
 
@@ -1667,7 +1668,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
         registrarTipifEvent(historial, miNombre, tipifNormalizada, { ...datosCicloTipif, ...(documentoTexto ? { documento:documentoTexto } : {}) });
         await db.query(`UPDATE leads SET tipif_vend=?, tipif_hora=?, historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
           [tipifNormalizada, horaPeruAhora(), JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
-        if (esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
+        if (!lead.lead_origen_id && esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
         return res.json({ ok: true, mensaje: 'Tipificación guardada' });
       }
     }
@@ -1687,7 +1688,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     registrarTipifEvent(historial, miNombre, tipifNormalizada, { ...datosCicloTipif, ...(documentoTexto ? { documento:documentoTexto } : {}) });
     await db.query(`UPDATE leads SET historial=?, obs_asesor=IF(?, ?, obs_asesor), distrito_sin_cobertura=IF(?='SIN COBERTURA',?,distrito_sin_cobertura), coordenadas_sin_cobertura=IF(?='SIN COBERTURA',?,coordenadas_sin_cobertura) WHERE id=?`,
       [JSON.stringify(historial), documentoTexto !== '' || tipifNormalizada === 'SIN COBERTURA', obsFinal, tipifNormalizada, distrito||'', tipifNormalizada, coordenadas||'', req.params.id]);
-    if (esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
+    if (!lead.lead_origen_id && esTipificacionOrigen(tipifNormalizada)) await bloquearOtrasCampanasDelDia(db, lead);
     res.json({ ok: true, mensaje: 'Tu tipificación fue actualizada' });
   } catch(e) {
     res.status(500).json({ ok: false, mensaje: 'Error al guardar tipificación' });
