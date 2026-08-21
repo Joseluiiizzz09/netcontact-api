@@ -1374,9 +1374,11 @@ router.post('/:id/enviar-seguimiento-whatsapp', auth(['seguimiento', 'jefatura']
     const horaTexto = tramo === 'AM' ? '9 AM a 1 PM' : tramo === 'PM' ? '2 PM a 6 PM' : tramo === 'PM 3' ? '6 PM a 8 PM' : null;
     if (!horaTexto) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene tramo de seguimiento (AM/PM) definido.' });
 
-    const fecha = new Date(venta.fecha_programada);
-    if (Number.isNaN(fecha.getTime())) return res.status(400).json({ ok: false, mensaje: 'Fecha programada inválida.' });
-    const dia = `${String(fecha.getDate()).padStart(2, '0')}/${String(fecha.getMonth() + 1).padStart(2, '0')}`;
+    // No usar new Date(string): "YYYY-MM-DD" se interpreta como medianoche UTC y
+    // al convertir a hora de Peru (UTC-5) retrocede un dia. Se extrae directo del texto.
+    const partesFecha = String(venta.fecha_programada).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!partesFecha) return res.status(400).json({ ok: false, mensaje: 'Fecha programada inválida.' });
+    const dia = `${partesFecha[3]}/${partesFecha[2]}`;
 
     let data;
     try {
