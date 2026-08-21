@@ -137,8 +137,41 @@ async function initDB() {
         tipif_hora    VARCHAR(10)  DEFAULT '',
         obs_asesor    TEXT,
         historial     TEXT,
+        creado_por_id INT NULL,
+        creado_por_nombre VARCHAR(150) DEFAULT '',
+        creado_por_usuario VARCHAR(100) DEFAULT '',
+        creado_desde_ip VARCHAR(64) DEFAULT '',
         created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (asesor_id) REFERENCES usuarios(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_ciclos_venta (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        numero_ciclo INT NOT NULL,
+        tipo VARCHAR(50) NOT NULL DEFAULT 'OTRA_DIRECCION',
+        estado VARCHAR(30) NOT NULL DEFAULT 'ABIERTO',
+        asesor_id INT NULL,
+        asesor_nombre VARCHAR(150) DEFAULT '',
+        direccion TEXT,
+        distrito VARCHAR(100) DEFAULT '',
+        motivo TEXT,
+        venta_id INT NULL,
+        creado_por_id INT NULL,
+        creado_por_nombre VARCHAR(150) NOT NULL,
+        creado_por_usuario VARCHAR(100) DEFAULT '',
+        creado_desde_ip VARCHAR(64) DEFAULT '',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        cerrado_at DATETIME NULL,
+        UNIQUE KEY uq_lead_ciclo (lead_id, numero_ciclo),
+        INDEX idx_ciclos_lead_estado (lead_id, estado),
+        INDEX idx_ciclos_venta (venta_id),
+        FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+        FOREIGN KEY (asesor_id) REFERENCES usuarios(id) ON DELETE SET NULL,
+        FOREIGN KEY (venta_id) REFERENCES ventas(id) ON DELETE SET NULL,
+        FOREIGN KEY (creado_por_id) REFERENCES usuarios(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
@@ -195,6 +228,10 @@ async function initDB() {
       ['coordenadas_sin_cobertura', "VARCHAR(255) DEFAULT ''"],
       ['obs_back',      'TEXT'],
       ['tipif_back_2',  "VARCHAR(100) DEFAULT ''"],
+      ['creado_por_id', 'INT NULL'],
+      ['creado_por_nombre', "VARCHAR(150) DEFAULT ''"],
+      ['creado_por_usuario', "VARCHAR(100) DEFAULT ''"],
+      ['creado_desde_ip', "VARCHAR(64) DEFAULT ''"],
     ];
     for (const [columna, definicion] of columnasLead) {
       await conn.query(`ALTER TABLE leads ADD COLUMN ${columna} ${definicion}`)
@@ -401,6 +438,11 @@ async function initDB() {
          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?
       `, [tabla, nombre]);
       if (!existe.total) await conn.query(`CREATE INDEX ${nombre} ON ${tabla}(${columnas})`);
+    }
+
+    for (const [columna, definicion] of [['lead_id', 'INT NULL'], ['lead_ciclo_id', 'INT NULL']]) {
+      await conn.query(`ALTER TABLE ventas ADD COLUMN ${columna} ${definicion}`)
+        .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
     }
     console.log('Indices de rendimiento verificados');
 

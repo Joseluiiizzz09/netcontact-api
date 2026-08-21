@@ -385,6 +385,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
     await conn.beginTransaction();
 
     let leadVenta = null;
+    let cicloVentaAbierto = null;
     let asesorVentaId = Number(req.user.id);
     let nombreAsesor = req.user.nombre || req.user.usuario || 'Asesor';
 
@@ -400,6 +401,12 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
         return res.status(400).json({ ok: false, mensaje: 'El número seleccionado no corresponde al lead indicado.' });
       }
       leadVenta = leads[0];
+      const [ciclos] = await conn.query(`
+        SELECT * FROM lead_ciclos_venta
+        WHERE lead_id=? AND estado='ABIERTO'
+        ORDER BY id DESC LIMIT 1 FOR UPDATE
+      `, [leadVenta.id]);
+      cicloVentaAbierto = ciclos[0] || null;
 
       if (req.user.cargo !== 'asesor') {
         if (!leadVenta.asesor_id) {
@@ -450,7 +457,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
         [String(v.telefono1).trim()]
       );
       const ultimaVenta = yaUsado.length ? await completarEstadoVentaCaida(conn, yaUsado[0]) : null;
-      if (ultimaVenta && !ventaEstaCaida(ultimaVenta)) {
+      if (ultimaVenta && !ventaEstaCaida(ultimaVenta) && !cicloVentaAbierto) {
         await conn.rollback();
         return res.status(400).json({ ok: false, mensaje: 'Este número ya fue registrado en otra venta. No puede ser usado nuevamente.' });
       }
@@ -462,8 +469,9 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
         telefono1, telefono2, departamento, provincia, distrito,
         direccion, coordenadas, fecha_nac, lugar_nac, padre, madre,
         cuota_inst, claro_hogar, tecnologia, paquete,
-        full_claro, cant_decos, cant_mesh, plano, estado, observacion
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        full_claro, cant_decos, cant_mesh, plano, estado, observacion,
+        lead_id, lead_ciclo_id
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `, [
       asesorVentaId, v.tipoDoc||'DNI', v.dni||null, v.nombre||null, v.email||null,
       v.telefono1||null, v.telefono2||null, v.departamento||null,
@@ -473,7 +481,8 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       v.cuotaInstalacion||null, v.hogar||null, v.tec||null,
       v.paquete||null, v.full||null,
       parseInt(v.cantDecos)||0, parseInt(v.cantMesh)||0,
-      v.plano||null, estadoFinal, v.obs||null
+      v.plano||null, estadoFinal, v.obs||null,
+      leadVenta?.id || null, cicloVentaAbierto?.id || null
     ]);
 
     if (leadVenta) {
@@ -486,7 +495,18 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
       historial.push({
         tipo: 'TIPIF_VEND', asesor: nombreAsesor, tipif: 'VENTA CERRADA',
         ts: Date.now(), hora, fecha, ventaCompleta: true, ventaId: result.insertId,
+        cicloId:cicloVentaAbierto?.id || null, numeroCiclo:cicloVentaAbierto?.numero_ciclo || 1,
       });
+      if (cicloVentaAbierto) {
+        historial.push({
+          tipo:'CICLO_VENTA', subtipo:'OTRA_DIRECCION', accion:'CIERRE',
+          cicloId:cicloVentaAbierto.id, numeroCiclo:cicloVentaAbierto.numero_ciclo,
+          ventaId:result.insertId, asesor:nombreAsesor, direccion:v.direccion || '', distrito:v.distrito || '',
+          realizadoPor:nombreAsesor, realizadoPorUsuario:req.user.usuario || '', realizadoPorId:req.user.id,
+          fecha, hora, ts:Date.now(),
+        });
+        await conn.query(`UPDATE lead_ciclos_venta SET estado='CERRADO', venta_id=?, cerrado_at=NOW() WHERE id=?`, [result.insertId, cicloVentaAbierto.id]);
+      }
       for (let i = historial.length - 2; i >= 0; i--) {
         const h = historial[i];
         if ((h?.asesorAnterior || '').trim() === nombreAsesor.trim()) {

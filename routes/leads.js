@@ -300,7 +300,12 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const numeroBusqueda = busquedaRaw.replace(/\D/g, '').slice(0, 20);
     const esBusquedaNumerica = /^[\d\s()+.\-]+$/.test(busquedaRaw);
 
-    let sql = `SELECT l.*, u.nombre as asesor_nombre_db
+    let sql = `SELECT l.*, u.nombre as asesor_nombre_db,
+      (SELECT COUNT(*) FROM lead_ciclos_venta lcv WHERE lcv.lead_id=l.id) AS ciclos_venta,
+      (SELECT COUNT(*) FROM ventas vx WHERE TRIM(vx.telefono1)=TRIM(l.n1)) AS ventas_registradas,
+      (SELECT lcv.id FROM lead_ciclos_venta lcv WHERE lcv.lead_id=l.id AND lcv.estado='ABIERTO' ORDER BY lcv.id DESC LIMIT 1) AS ciclo_abierto_id,
+      (SELECT lcv.numero_ciclo FROM lead_ciclos_venta lcv WHERE lcv.lead_id=l.id AND lcv.estado='ABIERTO' ORDER BY lcv.id DESC LIMIT 1) AS ciclo_abierto_numero,
+      (SELECT lcv.tipo FROM lead_ciclos_venta lcv WHERE lcv.lead_id=l.id AND lcv.estado='ABIERTO' ORDER BY lcv.id DESC LIMIT 1) AS ciclo_abierto_tipo
       FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
     const params = [];
     let visorAsesorId = null;
@@ -458,7 +463,8 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const tipifInterna = tipificacionInternaVenta(ventaInfo);
       // Una venta caída vuelve a pertenecer al lead y puede ser rotada a otro
       // vendedor. Las ventas vigentes continúan proyectando al vendedor de venta.
-      const ventaCerrada = ventaConfirmada === 1 && ventaAsesorId && tipifInterna?.tipificacion !== 'VENTA CAIDA';
+      const cicloAbierto = Number(l.ciclo_abierto_id || 0) > 0;
+      const ventaCerrada = !cicloAbierto && ventaConfirmada === 1 && ventaAsesorId && tipifInterna?.tipificacion !== 'VENTA CAIDA';
       let obsAsesorPersonal = obsAsesor;
       let obsBackPersonal = l.obs_back || '';
       if (visorAsesorId && visorAsesorNombre) {
@@ -491,16 +497,16 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         campana: normalizarCampana(l.campana) || l.campana,
         tipif_vend: tipifVisible,
         rotaciones: rotacionesReales,
-        venta_confirmada: ventaConfirmada,
+        venta_confirmada: cicloAbierto ? 0 : ventaConfirmada,
         venta_asesor_id: ventaAsesorId,
         venta_asesor_nombre: ventaAsesorNombre,
         venta_documento: ventaInfo?.venta_documento || '',
         venta_tipo_doc: ventaInfo?.venta_tipo_doc || '',
-        tipif_interna: tipifInterna?.tipificacion || '',
-        tipif_interna_color: tipifInterna?.color || '',
-        tipif_interna_area: tipifInterna?.area || '',
-        tipif_interna_fecha: tipifInterna?.fecha || '',
-        tipif_interna_motivo: tipifInterna?.motivo || '',
+        tipif_interna: cicloAbierto ? '' : (tipifInterna?.tipificacion || ''),
+        tipif_interna_color: cicloAbierto ? '' : (tipifInterna?.color || ''),
+        tipif_interna_area: cicloAbierto ? '' : (tipifInterna?.area || ''),
+        tipif_interna_fecha: cicloAbierto ? '' : (tipifInterna?.fecha || ''),
+        tipif_interna_motivo: cicloAbierto ? '' : (tipifInterna?.motivo || ''),
         ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
         obs_asesor_personal: obsAsesorPersonal,
@@ -581,9 +587,9 @@ router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (
     const [rows] = await db.query(
       `SELECT id, n1, fecha, historial FROM leads
        WHERE asesor_id = ? AND UPPER(tipif_vend) = 'VENTA CERRADA'
-       AND n1 NOT IN (
-         SELECT COALESCE(TRIM(telefono1),'') FROM ventas
-         WHERE telefono1 IS NOT NULL AND TRIM(telefono1) != ''
+       AND (
+         n1 NOT IN (SELECT COALESCE(TRIM(telefono1),'') FROM ventas WHERE telefono1 IS NOT NULL AND TRIM(telefono1) != '')
+         OR EXISTS (SELECT 1 FROM lead_ciclos_venta lcv WHERE lcv.lead_id=leads.id AND lcv.estado='ABIERTO')
        )`,
       [req.user.id]
     );
@@ -729,6 +735,8 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
 
     let creados = 0, actualizados = 0, existentes = 0, errores = 0;
     const erroresDetalle = [];
+    const cargadoPorImport = await nombreUsuario(req.user.id);
+    const ipCarga = req.ip || req.socket?.remoteAddress || '';
 
     await conn.beginTransaction();
 
@@ -761,7 +769,6 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
           : [];
         const lastAsesor = asesores.length ? asesores[asesores.length - 1] : '';
 
-        const cargadoPorImport = await nombreUsuario(req.user.id);
         const historialArray = asesores.length > 0
           ? asesores.map((a, i) => ({
               asesor:         a,
@@ -822,10 +829,10 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
             existentes++;
           }
         } else {
-          await conn.query(
-            `INSERT INTO leads (campana, distrito, n1, n2, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, tipif_vend, tipif_hora, historial, rotaciones, obs_asesor)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [campana, distrito, n1Raw, n2Clean, tipifBack, asesorId, asesorNombre, fechaLead, hora, sinAsignar, tipifVend, hora, JSON.stringify(historialArray), rotaciones, obsAsesor]
+          const [result] = await conn.query(
+            `INSERT INTO leads (campana, distrito, n1, n2, tipif_back, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, tipif_vend, tipif_hora, historial, rotaciones, obs_asesor, creado_por_id, creado_por_nombre, creado_por_usuario, creado_desde_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [campana, distrito, n1Raw, n2Clean, tipifBack, asesorId, asesorNombre, fechaLead, hora, sinAsignar, tipifVend, hora, JSON.stringify(historialArray), rotaciones, obsAsesor, req.user.id, cargadoPorImport, req.user.usuario || '', ipCarga]
           );
           creados++;
           if (esTipificacionOrigen(tipifVend)) {
@@ -947,13 +954,14 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
       const derivadoPorNombre = registraAutor ? await nombreUsuario(req.user.id) : '';
       const [result] = await db.query(`
-        INSERT INTO leads (campana, distrito, n1, n2, usuario_whatsapp, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO leads (campana, distrito, n1, n2, usuario_whatsapp, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones, creado_por_id, creado_por_nombre, creado_por_usuario, creado_desde_ip)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         campanaNormalizada, l.distrito||'', n1Normalizado, l.n2||null, usuarioWhatsapp,
         l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
         registraAutor ? req.user.id : null, derivadoPorNombre,
-        asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, asesorId?1:0
+        asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, asesorId?1:0,
+        req.user.id, nombreCargador, req.user.usuario || '', req.ip || req.socket?.remoteAddress || ''
       ]);
       ids.push(result.insertId);
       if (bloquearRotacion) {
@@ -1031,6 +1039,76 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al guardar datos de Back Office' });
+  }
+});
+
+// POST /api/leads/:id/otra-direccion
+// Abre un nuevo ciclo comercial sin duplicar el cliente. Es la unica via que
+// permite volver a trabajar manualmente un telefono con venta activa/instalada.
+router.post('/:id/otra-direccion', auth(ROLES_BO), async (req, res) => {
+  let conn;
+  try {
+    const { asesor_nombre, direccion, distrito, motivo } = req.body;
+    const errores = validar([
+      errorTexto(asesor_nombre, 'asesor_nombre', { requerido:true, max:150 }),
+      errorTexto(direccion, 'direccion', { requerido:true, max:1000 }),
+      errorTexto(distrito, 'distrito', { requerido:true, max:100 }),
+      errorTexto(motivo, 'motivo', { max:1000 }),
+    ]);
+    if (errores) return res.status(400).json({ ok:false, mensaje:errores[0] });
+
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+    const [rows] = await conn.query(`SELECT * FROM leads WHERE id=? FOR UPDATE`, [req.params.id]);
+    if (!rows.length) { await conn.rollback(); return res.status(404).json({ ok:false, mensaje:'Lead no encontrado' }); }
+    const lead = rows[0];
+    const [abiertos] = await conn.query(`SELECT id, numero_ciclo FROM lead_ciclos_venta WHERE lead_id=? AND estado='ABIERTO' LIMIT 1 FOR UPDATE`, [lead.id]);
+    if (abiertos.length) {
+      await conn.rollback();
+      return res.status(409).json({ ok:false, mensaje:`Ya existe un ciclo abierto (Venta ${abiertos[0].numero_ciclo}). Debe cerrarse antes de abrir otra dirección.` });
+    }
+    const [usuarios] = await conn.query(`SELECT id,nombre FROM usuarios WHERE TRIM(nombre)=TRIM(?) AND activo=1 AND (cargo='asesor' OR JSON_CONTAINS(COALESCE(permisos,'[]'), JSON_QUOTE('asesor'))) LIMIT 1`, [asesor_nombre]);
+    if (!usuarios.length) { await conn.rollback(); return res.status(404).json({ ok:false, mensaje:'Asesor no encontrado o inactivo' }); }
+    const asesor = usuarios[0];
+    const [[conteos]] = await conn.query(`
+      SELECT
+        (SELECT COUNT(*) FROM ventas WHERE TRIM(telefono1)=TRIM(?)) AS ventas,
+        (SELECT COALESCE(MAX(numero_ciclo),0) FROM lead_ciclos_venta WHERE lead_id=?) AS max_ciclo
+    `, [lead.n1 || '', lead.id]);
+    const numeroCiclo = Math.max(Number(conteos.ventas || 0), Number(conteos.max_ciclo || 0)) + 1;
+    const [actores] = await conn.query(`SELECT id,nombre,usuario,cargo FROM usuarios WHERE id=? LIMIT 1`, [req.user.id]);
+    const actor = actores[0] || { id:req.user.id, nombre:req.user.nombre || 'Usuario', usuario:req.user.usuario || '', cargo:req.user.cargo || '' };
+    const ip = req.ip || req.socket?.remoteAddress || '';
+    const [ciclo] = await conn.query(`
+      INSERT INTO lead_ciclos_venta
+        (lead_id,numero_ciclo,tipo,estado,asesor_id,asesor_nombre,direccion,distrito,motivo,creado_por_id,creado_por_nombre,creado_por_usuario,creado_desde_ip)
+      VALUES (?,?,'OTRA_DIRECCION','ABIERTO',?,?,?,?,?,?,?,?,?)
+    `, [lead.id, numeroCiclo, asesor.id, asesor.nombre, direccion.trim(), distrito.trim(), String(motivo || '').trim(), actor.id, actor.nombre, actor.usuario || '', ip]);
+    let historial = historialArray(lead.historial);
+    const fecha = fechaPeruHoy();
+    const hora = horaPeruAhora();
+    historial.push({
+      tipo:'CICLO_VENTA', subtipo:'OTRA_DIRECCION', accion:'ASIGNACION',
+      cicloId:ciclo.insertId, numeroCiclo, asesor:asesor.nombre,
+      asesorAnterior:lead.asesor_nombre || '', direccion:direccion.trim(), distrito:distrito.trim(),
+      tipificacionAnterior:lead.tipif_vend || '', motivo:String(motivo || '').trim(),
+      realizadoPor:actor.nombre, realizadoPorUsuario:actor.usuario || '', realizadoPorId:actor.id,
+      ip, fecha, hora, ts:Date.now(),
+    });
+    const rotacionesReales = contarRotacionesHistorial(historial);
+    await conn.query(`
+      UPDATE leads SET asesor_id=?, asesor_nombre=?, direccion=?, distrito=?, hora_asig=?,
+        sin_asignar=0, tipif_vend='', tipif_hora='', obs_asesor='', historial=?, rotaciones=?
+      WHERE id=?
+    `, [asesor.id, asesor.nombre, direccion.trim(), distrito.trim(), hora, JSON.stringify(historial), rotacionesReales, lead.id]);
+    await conn.commit();
+    res.json({ ok:true, ciclo_id:ciclo.insertId, numero_ciclo:numeroCiclo, asesor_id:asesor.id, asesor:asesor.nombre, historial, mensaje:`Venta ${numeroCiclo} — OTRA DIRECCIÓN habilitada para ${asesor.nombre}` });
+  } catch (e) {
+    if (conn) await conn.rollback().catch(() => {});
+    console.error('[otra-direccion]', e);
+    res.status(500).json({ ok:false, mensaje:'No se pudo abrir el ciclo de otra dirección' });
+  } finally {
+    if (conn) conn.release();
   }
 });
 
@@ -1488,7 +1566,8 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
       // VENTA CAIDA no bloquea: el asesor puede volver a tipificar (p.ej. si
       // recupera la venta), igual que ya se permite al rotar este numero.
       const tipifInternaActual = tipificacionInternaVenta(ventasCRM[0]);
-      if (tipifInternaActual && tipifInternaActual.tipificacion !== 'VENTA CAIDA') {
+      const [ciclosAbiertos] = await db.query(`SELECT id FROM lead_ciclos_venta WHERE lead_id=? AND estado='ABIERTO' LIMIT 1`, [req.params.id]);
+      if (tipifInternaActual && tipifInternaActual.tipificacion !== 'VENTA CAIDA' && !ciclosAbiertos.length) {
         return res.status(409).json({ ok:false, mensaje:'Este lead tiene una tipificacion interna exclusiva actualizada por el CRM' });
       }
     }
