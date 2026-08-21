@@ -1156,10 +1156,13 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       const marcaActual = `${normalizarFechaAsignacion(actual?.fecha)} ${String(actual?.hora || '').padStart(5, '0')}`;
       return !ultima || marcaActual >= marcaUltima ? actual : ultima;
     }, null);
-    const esReactivacionManual = reactivacion_manual === true
-      && ultimaDelMismo
+    // La reasignacion manual es una excepcion deliberada: Back Data puede
+    // devolver el lead a cualquier asesor que ya lo tuvo, incluso al titular
+    // actual y dentro del mismo dia. La rotacion inteligente no usa esta marca.
+    const esReasignacionManual = reactivacion_manual === true && Boolean(ultimaDelMismo);
+    const esReactivacionManual = esReasignacionManual
       && normalizarFechaAsignacion(ultimaDelMismo.fecha) < fechaPeruHoy();
-    if (esMismoAsesor && !esReactivacionManual) {
+    if (esMismoAsesor && !esReasignacionManual) {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: 'Selecciona un asesor diferente al actual' });
     }
@@ -1172,7 +1175,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
         String(nombre || '').trim().toUpperCase() === String(asesorNuevo.nombre || '').trim().toUpperCase()
       )
     );
-    if (asesorYaUsado && !esReactivacionManual) {
+    if (asesorYaUsado && !esReasignacionManual) {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: 'Este número ya fue asignado anteriormente a ese asesor' });
     }
@@ -1190,7 +1193,7 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
     const fecha = fechaPeruHoy();
     const hora  = horaPeruAhora();
     historial.push({
-      tipo:          esReactivacionManual ? 'REACTIVACION_MANUAL' : 'ROTACION',
+      tipo:          esReactivacionManual ? 'REACTIVACION_MANUAL' : (esReasignacionManual ? 'REASIGNACION_MANUAL' : 'ROTACION'),
       asesor:        asesorNuevo.nombre,
       asesorAnterior: lead.asesor_nombre || 'Sin asignar',
       rotadoPor:     rotadorNombre,
@@ -1206,7 +1209,9 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       })(),
       hora,
       fecha,
-      motivo: String(motivo || '').trim() || (esReactivacionManual ? 'Reactivacion manual para la base de hoy' : 'Rotacion manual'),
+      motivo: String(motivo || '').trim() || (esReactivacionManual
+        ? 'Reactivacion manual para la base de hoy'
+        : (esReasignacionManual ? 'Reasignacion manual al mismo asesor' : 'Rotacion manual')),
     });
 
     // Actualiza el registro existente: no crea duplicados.
@@ -1231,9 +1236,12 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       historial,
       rotaciones:rotacionesReales,
       reactivado:esReactivacionManual,
+      reasignado_manual:esReasignacionManual,
       mensaje: esReactivacionManual
         ? `Lead reactivado para ${asesorNuevo.nombre} en la base de hoy`
-        : `Registro rotado a ${asesorNuevo.nombre}`,
+        : (esReasignacionManual
+          ? `Lead reasignado manualmente a ${asesorNuevo.nombre}`
+          : `Registro rotado a ${asesorNuevo.nombre}`),
     });
   } catch (e) {
     if (conn) await conn.rollback().catch(() => {});
