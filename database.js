@@ -141,6 +141,9 @@ async function initDB() {
         creado_por_nombre VARCHAR(150) DEFAULT '',
         creado_por_usuario VARCHAR(100) DEFAULT '',
         creado_desde_ip VARCHAR(64) DEFAULT '',
+        lead_origen_id INT NULL,
+        instancia_venta_numero INT NULL,
+        instancia_tipo VARCHAR(50) DEFAULT '',
         created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (asesor_id) REFERENCES usuarios(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -232,6 +235,9 @@ async function initDB() {
       ['creado_por_nombre', "VARCHAR(150) DEFAULT ''"],
       ['creado_por_usuario', "VARCHAR(100) DEFAULT ''"],
       ['creado_desde_ip', "VARCHAR(64) DEFAULT ''"],
+      ['lead_origen_id', 'INT NULL'],
+      ['instancia_venta_numero', 'INT NULL'],
+      ['instancia_tipo', "VARCHAR(50) DEFAULT ''"],
     ];
     for (const [columna, definicion] of columnasLead) {
       await conn.query(`ALTER TABLE leads ADD COLUMN ${columna} ${definicion}`)

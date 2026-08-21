@@ -310,6 +310,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const params = [];
     let visorAsesorId = null;
     let visorAsesorNombre = '';
+    // Las instancias técnicas representan formularios independientes para el
+    // asesor; Back Data conserva una sola fila para el cliente principal.
+    if (cargoEfectivo !== 'asesor' && !asesor_id) sql += ` AND l.lead_origen_id IS NULL`;
 
     // La búsqueda global se resuelve en MySQL y no descargando toda la base al
     // navegador. Para teléfonos completos conserva búsquedas indexables.
@@ -1245,6 +1248,56 @@ router.post('/:id/rotar', auth(ROLES_BO), async (req, res) => {
       await conn.rollback();
       return res.status(409).json({ ok: false, mensaje: 'Selecciona un asesor diferente al actual' });
     }
+    // Si OTRA DIRECCION ya tiene una instancia abierta, cada nueva asignación
+    // manual crea OTRO formulario; nunca reemplaza el anterior.
+    const [ciclosAbiertosManual] = await conn.query(`SELECT id FROM lead_ciclos_venta WHERE lead_id=? AND estado='ABIERTO' LIMIT 1`, [lead.id]);
+    if (reactivacion_manual === true && ciclosAbiertosManual.length) {
+      const [usuariosInstancia] = await conn.query(`
+        SELECT id,TRIM(nombre) nombre FROM usuarios
+        WHERE TRIM(nombre)=? AND activo=1
+          AND (cargo='asesor' OR JSON_CONTAINS(COALESCE(permisos,'[]'), JSON_QUOTE('asesor')))
+        LIMIT 1
+      `, [asesor_nombre.trim()]);
+      if (!usuariosInstancia.length) { await conn.rollback(); return res.status(404).json({ok:false,mensaje:'Asesor no encontrado o inactivo'}); }
+      const asesorInstancia = usuariosInstancia[0];
+      const parentId = Number(lead.lead_origen_id || lead.id);
+      const [[secuencia]] = await conn.query(`
+        SELECT GREATEST(
+          COALESCE((SELECT MAX(instancia_venta_numero) FROM leads WHERE id=? OR lead_origen_id=?),0),
+          COALESCE((SELECT MAX(numero_ciclo) FROM lead_ciclos_venta WHERE lead_id=? OR lead_id IN (SELECT id FROM leads WHERE lead_origen_id=?)),0)
+        ) AS ultimo
+      `, [parentId,parentId,parentId,parentId]);
+      const numeroInstancia = Number(secuencia.ultimo || 0) + 1;
+      const actorNombre = await nombreUsuario(req.user.id);
+      const fechaInstancia = fechaPeruHoy();
+      const horaInstancia = horaPeruAhora();
+      const historialInstancia = [{
+        tipo:'CICLO_VENTA',subtipo:'OTRA_DIRECCION',accion:'ASIGNACION',numeroCiclo:numeroInstancia,
+        asesor:asesorInstancia.nombre,asesorAnterior:lead.asesor_nombre || '',
+        realizadoPor:actorNombre,realizadoPorUsuario:req.user.usuario || '',realizadoPorId:req.user.id,
+        motivo:String(motivo || '').trim() || 'Nueva venta del mismo cliente',
+        fecha:fechaInstancia,hora:horaInstancia,ts:Date.now(),
+      }];
+      const [nueva] = await conn.query(`
+        INSERT INTO leads
+          (campana,distrito,n1,n2,usuario_whatsapp,tipo_contacto,direccion,coordenadas,obs_back,
+           asesor_id,asesor_nombre,fecha,hora_asig,rotaciones,sin_asignar,tipif_vend,tipif_hora,obs_asesor,historial,
+           creado_por_id,creado_por_nombre,creado_por_usuario,creado_desde_ip,lead_origen_id,instancia_venta_numero,instancia_tipo)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,'','','',?,?,?,?,?,?,?,'OTRA_DIRECCION')
+      `, [lead.campana||'',lead.distrito||'',lead.n1,lead.n2||null,lead.usuario_whatsapp||'',lead.tipo_contacto||'LLAMADA',
+          '', '', '', asesorInstancia.id,asesorInstancia.nombre,fechaInstancia,horaInstancia,JSON.stringify(historialInstancia),
+          req.user.id,actorNombre,req.user.usuario||'',req.ip||req.socket?.remoteAddress||'',parentId,numeroInstancia]);
+      const [cicloNuevo] = await conn.query(`
+        INSERT INTO lead_ciclos_venta
+          (lead_id,numero_ciclo,tipo,estado,asesor_id,asesor_nombre,direccion,distrito,motivo,creado_por_id,creado_por_nombre,creado_por_usuario,creado_desde_ip)
+        VALUES (?,?,'OTRA_DIRECCION','ABIERTO',?,?, '', '', ?,?,?,?,?)
+      `, [nueva.insertId,numeroInstancia,asesorInstancia.id,asesorInstancia.nombre,String(motivo||'').trim(),req.user.id,actorNombre,req.user.usuario||'',req.ip||req.socket?.remoteAddress||'']);
+      historialInstancia[0].cicloId = cicloNuevo.insertId;
+      await conn.query(`UPDATE leads SET historial=? WHERE id=?`, [JSON.stringify(historialInstancia),nueva.insertId]);
+      await conn.commit();
+      return res.json({ok:true,id:nueva.insertId,asesor_id:asesorInstancia.id,asesor:asesorInstancia.nombre,
+        nueva_instancia:true,numero_instancia:numeroInstancia,mensaje:`Formulario ${numeroInstancia} · OTRA DIRECCIÓN asignado a ${asesorInstancia.nombre}`});
+    }
 
     const rotadorNombre = await nombreUsuario(req.user.id);
 
@@ -1533,7 +1586,7 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     const cicloTipif = ciclosTipif[0] || null;
     const datosCicloTipif = cicloTipif ? { cicloId:cicloTipif.id, numeroCiclo:cicloTipif.numero_ciclo, subtipo:cicloTipif.tipo } : {};
     const idPrincipalDia = await idLeadMasAntiguoDelDia(db, lead.n1, normalizarFechaAsignacion(lead.fecha));
-    if (idPrincipalDia && Number(idPrincipalDia) !== Number(lead.id)) {
+    if (!lead.lead_origen_id && idPrincipalDia && Number(idPrincipalDia) !== Number(lead.id)) {
       await db.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaPeruAhora(), lead.id]);
       return res.status(409).json({ ok:false, tipif_vend:'NO ROTAR', mensaje:'Solo el primer registro del numero en el dia puede recibir tipificacion' });
     }
