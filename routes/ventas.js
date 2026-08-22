@@ -621,13 +621,15 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async
              cg.updated_at AS calidad_updated_at` : '';
     const joinCalidad = incluyeCalidad ? 'LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id' : '';
     const [data] = await db.query(`
-      SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete${camposCalidad},
+      SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
+             COALESCE(u.nombre, v.asesor_nombre) AS vendedor_nombre${camposCalidad},
              COALESCE(inst.fecha_instalacion,
                CASE WHEN REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
                  ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
                THEN v.created_at END
              ) AS fecha_instalacion
         FROM ventas v
+        LEFT JOIN usuarios u ON u.id = v.asesor_id
         ${joinCalidad}
         LEFT JOIN (
           SELECT venta_id, MIN(created_at) AS fecha_instalacion
