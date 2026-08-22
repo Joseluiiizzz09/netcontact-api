@@ -595,6 +595,44 @@ function asegurarTablaCalidad() {
   return promesaTablaCalidad;
 }
 
+let promesaTablaCobranza;
+function asegurarTablaCobranza() {
+  if (!promesaTablaCobranza) {
+    promesaTablaCobranza = (async () => {
+      await db.query(`
+      CREATE TABLE IF NOT EXISTS cobranza_gestiones (
+        venta_id INT NOT NULL PRIMARY KEY,
+        ciclo_facturacion INT NULL,
+        codigo_pago VARCHAR(60) NULL,
+        recibo1_tipificacion VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+        recibo2_tipificacion VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+        recibo3_tipificacion VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+        recibo4_tipificacion VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+        recibo5_tipificacion VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+        recibo6_tipificacion VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+        actualizado_por_id INT NULL,
+        actualizado_por_nombre VARCHAR(150) NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS cobranza_historial (
+          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          venta_id INT NOT NULL,
+          campo VARCHAR(60) NOT NULL,
+          valor_anterior TEXT NULL,
+          valor_nuevo TEXT NULL,
+          usuario_id INT NULL,
+          usuario_nombre VARCHAR(150) NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_cobranza_historial_venta (venta_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    })().catch(error => { promesaTablaCobranza = null; throw error; });
+  }
+  return promesaTablaCobranza;
+}
+
 // Listado de solo lectura para Cobranzas. Una venta entra desde el momento en
 // que alcanzó por primera vez un estado de instalación y permanece disponible
 // aunque luego avance a otro estado operativo.
@@ -603,7 +641,9 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
     // Jefatura puede supervisar estos campos únicamente al entrar al módulo
     // mediante Accesos directos; la escritura continúa reservada a Calidad.
     const incluyeCalidad = ['calidad','supcalidad'].includes(req.user.cargo);
+    const incluyeCobranza = req.user.cargo === 'cobranzas';
     if (incluyeCalidad) await asegurarTablaCalidad();
+    if (incluyeCobranza) await asegurarTablaCobranza();
     const camposCalidad = incluyeCalidad ? `,
              COALESCE(cg.llamada, 'PENDIENTE') AS calidad_llamada,
              COALESCE(cg.whatsapp, 'PENDIENTE') AS calidad_whatsapp,
@@ -619,10 +659,21 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
              cg.tratamiento_at AS calidad_tratamiento_at,
              cg.actualizado_por_nombre AS calidad_actualizado_por_nombre,
              cg.updated_at AS calidad_updated_at` : '';
+    const camposCobranza = incluyeCobranza ? `,
+             cb.ciclo_facturacion AS cobranza_ciclo_facturacion,
+             cb.codigo_pago AS cobranza_codigo_pago,
+             COALESCE(cb.recibo1_tipificacion, 'PENDIENTE') AS cobranza_recibo1_tipificacion,
+             COALESCE(cb.recibo2_tipificacion, 'PENDIENTE') AS cobranza_recibo2_tipificacion,
+             COALESCE(cb.recibo3_tipificacion, 'PENDIENTE') AS cobranza_recibo3_tipificacion,
+             COALESCE(cb.recibo4_tipificacion, 'PENDIENTE') AS cobranza_recibo4_tipificacion,
+             COALESCE(cb.recibo5_tipificacion, 'PENDIENTE') AS cobranza_recibo5_tipificacion,
+             COALESCE(cb.recibo6_tipificacion, 'PENDIENTE') AS cobranza_recibo6_tipificacion,
+             cb.updated_at AS cobranza_updated_at` : '';
     const joinCalidad = incluyeCalidad ? 'LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id' : '';
+    const joinCobranza = incluyeCobranza ? 'LEFT JOIN cobranza_gestiones cb ON cb.venta_id = v.id' : '';
     const [data] = await db.query(`
       SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
-             COALESCE(u.nombre, v.asesor_nombre) AS vendedor_nombre${camposCalidad},
+             COALESCE(u.nombre, v.asesor_nombre) AS vendedor_nombre${camposCalidad}${camposCobranza},
              COALESCE(inst.fecha_instalacion,
                CASE WHEN REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
                  ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
@@ -631,6 +682,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
         FROM ventas v
         LEFT JOIN usuarios u ON u.id = v.asesor_id
         ${joinCalidad}
+        ${joinCobranza}
         LEFT JOIN (
           SELECT venta_id, MIN(created_at) AS fecha_instalacion
             FROM venta_historial
@@ -766,6 +818,111 @@ router.get('/calidad/:id/historial', auth(['calidad','supcalidad','jefatura']), 
   } catch (e) {
     console.error('[GET /ventas/calidad/:id/historial]', e.message || e);
     res.status(500).json({ ok:false, mensaje:'Error al obtener el historial de Calidad' });
+  }
+});
+
+const COBRANZA_TIPIFICACIONES = ['PAGADO', 'PENDIENTE', 'BAJA', 'SUSPENDIDO', 'VENCIDO'];
+
+function esEscrituraCobranzaValida(req) {
+  return req.user.cargo === 'cobranzas' && !req.user.accesoDirectoJefatura;
+}
+
+router.patch('/cobranza/:id/ciclo', auth(['cobranzas']), async (req, res) => {
+  try {
+    if (!esEscrituraCobranzaValida(req)) {
+      return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Cobranza' });
+    }
+    await asegurarTablaCobranza();
+    const ventaId = Number(req.params.id);
+    const ciclo = Number(req.body?.ciclo);
+    if (!Number.isInteger(ventaId) || ventaId <= 0 || !Number.isInteger(ciclo) || ciclo < 1 || ciclo > 31) {
+      return res.status(400).json({ ok:false, mensaje:'Ciclo de facturación no válido (1-31)' });
+    }
+    const [venta] = await db.query('SELECT v.id, cb.ciclo_facturacion AS valor_anterior FROM ventas v LEFT JOIN cobranza_gestiones cb ON cb.venta_id=v.id WHERE v.id=? LIMIT 1', [ventaId]);
+    if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
+    await db.query(`
+      INSERT INTO cobranza_gestiones (venta_id, ciclo_facturacion, actualizado_por_id, actualizado_por_nombre)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE ciclo_facturacion=VALUES(ciclo_facturacion),
+        actualizado_por_id=VALUES(actualizado_por_id), actualizado_por_nombre=VALUES(actualizado_por_nombre), updated_at=CURRENT_TIMESTAMP
+    `, [ventaId, ciclo, req.user.id, req.user.nombre || req.user.usuario || 'Cobranza']);
+    await db.query(`INSERT INTO cobranza_historial (venta_id,campo,valor_anterior,valor_nuevo,usuario_id,usuario_nombre) VALUES (?,?,?,?,?,?)`,
+      [ventaId, 'ciclo_facturacion', venta[0].valor_anterior != null ? String(venta[0].valor_anterior) : '—', String(ciclo), req.user.id, req.user.nombre || req.user.usuario || 'Cobranza']);
+    res.json({ ok:true, ciclo });
+  } catch (e) {
+    console.error('[PATCH /ventas/cobranza/:id/ciclo]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al guardar el ciclo de facturación' });
+  }
+});
+
+router.patch('/cobranza/:id/codigo-pago', auth(['cobranzas']), async (req, res) => {
+  try {
+    if (!esEscrituraCobranzaValida(req)) {
+      return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Cobranza' });
+    }
+    await asegurarTablaCobranza();
+    const ventaId = Number(req.params.id);
+    const codigoPago = String(req.body?.codigo_pago || '').trim();
+    if (!Number.isInteger(ventaId) || ventaId <= 0 || codigoPago.length > 60) {
+      return res.status(400).json({ ok:false, mensaje:'Código de pago no válido' });
+    }
+    const [venta] = await db.query('SELECT v.id, cb.codigo_pago AS valor_anterior FROM ventas v LEFT JOIN cobranza_gestiones cb ON cb.venta_id=v.id WHERE v.id=? LIMIT 1', [ventaId]);
+    if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
+    await db.query(`
+      INSERT INTO cobranza_gestiones (venta_id, codigo_pago, actualizado_por_id, actualizado_por_nombre)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE codigo_pago=VALUES(codigo_pago),
+        actualizado_por_id=VALUES(actualizado_por_id), actualizado_por_nombre=VALUES(actualizado_por_nombre), updated_at=CURRENT_TIMESTAMP
+    `, [ventaId, codigoPago || null, req.user.id, req.user.nombre || req.user.usuario || 'Cobranza']);
+    await db.query(`INSERT INTO cobranza_historial (venta_id,campo,valor_anterior,valor_nuevo,usuario_id,usuario_nombre) VALUES (?,?,?,?,?,?)`,
+      [ventaId, 'codigo_pago', venta[0].valor_anterior || '—', codigoPago, req.user.id, req.user.nombre || req.user.usuario || 'Cobranza']);
+    res.json({ ok:true, codigo_pago: codigoPago });
+  } catch (e) {
+    console.error('[PATCH /ventas/cobranza/:id/codigo-pago]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al guardar el código de pago' });
+  }
+});
+
+router.patch('/cobranza/:id/recibo', auth(['cobranzas']), async (req, res) => {
+  try {
+    if (!esEscrituraCobranzaValida(req)) {
+      return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Cobranza' });
+    }
+    await asegurarTablaCobranza();
+    const ventaId = Number(req.params.id);
+    const numero = Number(req.body?.numero);
+    const valor = String(req.body?.valor || '').trim().toUpperCase();
+    if (!Number.isInteger(ventaId) || ventaId <= 0 || !Number.isInteger(numero) || numero < 1 || numero > 6 || !COBRANZA_TIPIFICACIONES.includes(valor)) {
+      return res.status(400).json({ ok:false, mensaje:'Tipificación de recibo no válida' });
+    }
+    const columna = `recibo${numero}_tipificacion`;
+    const [venta] = await db.query(`SELECT v.id, cb.${columna} AS valor_anterior FROM ventas v LEFT JOIN cobranza_gestiones cb ON cb.venta_id=v.id WHERE v.id=? LIMIT 1`, [ventaId]);
+    if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
+    await db.query(`
+      INSERT INTO cobranza_gestiones (venta_id, ${columna}, actualizado_por_id, actualizado_por_nombre)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE ${columna}=VALUES(${columna}),
+        actualizado_por_id=VALUES(actualizado_por_id), actualizado_por_nombre=VALUES(actualizado_por_nombre), updated_at=CURRENT_TIMESTAMP
+    `, [ventaId, valor, req.user.id, req.user.nombre || req.user.usuario || 'Cobranza']);
+    await db.query(`INSERT INTO cobranza_historial (venta_id,campo,valor_anterior,valor_nuevo,usuario_id,usuario_nombre) VALUES (?,?,?,?,?,?)`,
+      [ventaId, columna, venta[0].valor_anterior || 'PENDIENTE', valor, req.user.id, req.user.nombre || req.user.usuario || 'Cobranza']);
+    res.json({ ok:true, numero, valor });
+  } catch (e) {
+    console.error('[PATCH /ventas/cobranza/:id/recibo]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al guardar la tipificación del recibo' });
+  }
+});
+
+router.get('/cobranza/:id/historial', auth(['cobranzas','jefatura']), async (req, res) => {
+  try {
+    await asegurarTablaCobranza();
+    const ventaId = Number(req.params.id);
+    if (!Number.isInteger(ventaId) || ventaId <= 0) return res.status(400).json({ ok:false, mensaje:'Cliente no válido' });
+    const [data] = await db.query(`SELECT id,campo,valor_anterior,valor_nuevo,usuario_nombre,created_at FROM cobranza_historial WHERE venta_id=? ORDER BY created_at DESC,id DESC`, [ventaId]);
+    res.json({ ok:true, data });
+  } catch (e) {
+    console.error('[GET /ventas/cobranza/:id/historial]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al obtener el historial de Cobranza' });
   }
 });
 
