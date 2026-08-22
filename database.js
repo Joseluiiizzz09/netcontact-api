@@ -372,6 +372,32 @@ async function initDB() {
     // el token, nunca desde el frontend (ver PATCH /:id en routes/ventas.js).
     await conn.query(`ALTER TABLE ventas ADD COLUMN grabando_por_id INT NULL`)
       .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    await conn.query(`ALTER TABLE ventas ADD COLUMN grabando_por_nombre VARCHAR(150) NULL`)
+      .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    await conn.query(`
+      UPDATE ventas v
+      JOIN usuarios u ON u.id = v.grabando_por_id
+         SET v.grabando_por_nombre = u.nombre
+       WHERE NULLIF(TRIM(COALESCE(v.grabando_por_nombre, '')), '') IS NULL
+    `);
+    await conn.query(`
+      UPDATE ventas v
+         SET v.grabando_por_nombre = (
+           SELECT vh.usuario_nombre
+             FROM venta_historial vh
+            WHERE vh.venta_id = v.id
+              AND vh.campo = 'estado_grab'
+              AND LOWER(TRIM(vh.valor_nuevo)) = 'grabando'
+            ORDER BY vh.id DESC LIMIT 1
+         )
+       WHERE NULLIF(TRIM(COALESCE(v.grabando_por_nombre, '')), '') IS NULL
+         AND EXISTS (
+           SELECT 1 FROM venta_historial vh
+            WHERE vh.venta_id = v.id
+              AND vh.campo = 'estado_grab'
+              AND LOWER(TRIM(vh.valor_nuevo)) = 'grabando'
+         )
+    `);
     // Verificación vía information_schema (portable entre MySQL y MariaDB,
     // a diferencia de capturar códigos de error de ALTER que difieren entre
     // motores) para no reintentar el ALTER si el FK ya existe.

@@ -195,6 +195,7 @@ router.delete('/:id', auth(ROLES), async (req, res) => {
     // Antes de soltar las llaves foráneas, consolida el nombre histórico en
     // cada registro operativo para que ventas y asignaciones sigan atribuidas.
     await conn.query(`UPDATE ventas SET asesor_nombre=? WHERE asesor_id=?`, [usuario.nombre, usuario.id]);
+    await conn.query(`UPDATE ventas SET grabando_por_nombre=? WHERE grabando_por_id=?`, [usuario.nombre, usuario.id]);
     await conn.query(`UPDATE leads SET asesor_nombre=? WHERE asesor_id=?`, [usuario.nombre, usuario.id]);
     await conn.query(`UPDATE lead_ciclos_venta SET asesor_nombre=? WHERE asesor_id=?`, [usuario.nombre, usuario.id]);
     await conn.query(`UPDATE venta_asignaciones SET asesor_anterior_nombre=? WHERE asesor_anterior_id=?`, [usuario.nombre, usuario.id]);

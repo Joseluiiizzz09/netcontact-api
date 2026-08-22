@@ -709,7 +709,7 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     // subconsulta agrupada (no una consulta por fila) para que Super de
     // Grabaciones pueda mostrar "PROGRAMADO: HH:mm / DD/MM/YYYY" cuando el
     // audio todavía no está subido.
-    let sql = `SELECT v.*, COALESCE(u.nombre, v.asesor_nombre) as asesor_nombre, u.sala, g.nombre as grabando_por_nombre,
+    let sql = `SELECT v.*, COALESCE(u.nombre, v.asesor_nombre) as asesor_nombre, u.sala, COALESCE(g.nombre, v.grabando_por_nombre) as grabando_por_nombre,
                ph.fecha_programado,
                ph_prog.estado_prog, ph_prog.usuario_prog, ph_prog.fecha_prog,
                ph_sup.fecha_sup_resultado,
@@ -1346,7 +1346,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       String(estado_supgrab).toLowerCase() === 'no_conforme'
     ) {
       const estadoActual = String(rows[0].estado || '').toUpperCase();
-      const PRE_NOCONFORME = new Set(['VALIDADO', 'APROBADO']);
+      const PRE_NOCONFORME = new Set(['VALIDADO', 'APROBADO', 'PROGRAMADO']);
       if (!PRE_NOCONFORME.has(estadoActual)) _estadoAplicar = undefined;
     }
     // Guardia RECHAZADO de Programación: solo revertir a VALIDADO si la venta está en un estado de Programación
@@ -1402,9 +1402,13 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     // delegado de supgrabaciones podría no coincidir con el check de rol).
     // Así, en el caso borde de una venta histórica sin responsable
     // registrado, jamás queda atribuida a quien la está revisando.
-    const esDevolucionSuper = estado_supgrab !== undefined && String(estado_supgrab).toLowerCase() === 'observado';
+    const esDevolucionSuper = estado_supgrab !== undefined && (
+      String(estado_supgrab).toLowerCase() === 'observado' ||
+      (String(estado_supgrab).toLowerCase() === 'no_conforme' && String(rows[0].estado || '').toUpperCase() === 'PROGRAMADO')
+    );
     if (estado_grab !== undefined && String(estado_grab).toLowerCase() === 'grabando' && !esDevolucionSuper) {
       campos.push('grabando_por_id = ?'); vals.push(req.user.id);
+      campos.push('grabando_por_nombre = ?'); vals.push(req.user.nombre || req.user.usuario || 'Grabaciones');
     }
 
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
