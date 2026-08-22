@@ -7,7 +7,7 @@ const path     = require('path');
 const fs       = require('fs');
 const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositivo, errorId, errorEnum, TIPO_DOC_OK } = require('../middleware/validar');
 
-const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','supgrabaciones'];
+const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','cobranzas','supgrabaciones'];
 const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz','esperando_tercero','corregir_sec'];
 const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado','programado','conforme','no_conforme','audio_subido'];
 const TRAMOS_SEGUIMIENTO_OK = ['AM','PM','PM 3'];
@@ -530,6 +530,39 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
     res.status(500).json({ ok: false, mensaje: 'Error al guardar venta' });
   } finally {
     if (conn) conn.release();
+  }
+});
+
+// Listado de solo lectura para Cobranzas. Una venta entra desde el momento en
+// que alcanzó por primera vez un estado de instalación y permanece disponible
+// aunque luego avance a otro estado operativo.
+router.get('/cobranzas-listado', auth(['cobranzas','jefatura']), async (req, res) => {
+  try {
+    const [data] = await db.query(`
+      SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
+             COALESCE(inst.fecha_instalacion,
+               CASE WHEN REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
+                 ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
+               THEN v.created_at END
+             ) AS fecha_instalacion
+        FROM ventas v
+        LEFT JOIN (
+          SELECT venta_id, MIN(created_at) AS fecha_instalacion
+            FROM venta_historial
+           WHERE campo = 'estado'
+             AND REPLACE(UPPER(TRIM(COALESCE(valor_nuevo, ''))), '_', ' ') IN
+                 ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
+           GROUP BY venta_id
+        ) inst ON inst.venta_id = v.id
+       WHERE inst.fecha_instalacion IS NOT NULL
+          OR REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
+             ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
+       ORDER BY fecha_instalacion DESC, v.id DESC
+    `);
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error('[GET /ventas/cobranzas-listado]', e.message || e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener clientes instalados' });
   }
 });
 
