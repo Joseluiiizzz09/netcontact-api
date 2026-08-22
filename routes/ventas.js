@@ -1370,7 +1370,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
     agregarCambio('obs_validacion', obs_validacion);
     agregarCambio('obs_supgrab', obs_supgrab);
     agregarCambio('estado_supgrab', estado_supgrab);
-    if (estado_supgrab !== undefined && String(estado_supgrab).toLowerCase() === 'conforme') {
+    if (estado_supgrab !== undefined && ['conforme', 'rechazado'].includes(String(estado_supgrab).toLowerCase())) {
       campos.push('seguimiento_ingresado_at = COALESCE(seguimiento_ingresado_at, NOW())');
     }
     agregarCambio('estado_grab', estado_grab);
@@ -1384,7 +1384,7 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       campos.push('programacion_expira_at = DATE_ADD(NOW(), INTERVAL 2 HOUR)');
     } else if (estado !== undefined && String(estado).toUpperCase() === 'PENDIENTE') {
       campos.push('programacion_expira_at = NULL');
-    } else if (estado_supgrab !== undefined && ['conforme', 'no_conforme'].includes(String(estado_supgrab).toLowerCase())) {
+    } else if (estado_supgrab !== undefined && ['conforme', 'no_conforme', 'rechazado'].includes(String(estado_supgrab).toLowerCase())) {
       campos.push('programacion_expira_at = NULL');
     }
 
