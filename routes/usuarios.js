@@ -10,7 +10,7 @@ const { validar, errorTexto, errorEnum, errorPermisos, GENERO_OK } = require('..
 const { desbloquearLogin } = require('../security/loginRateLimit');
 
 const ROLES = ['jefatura','usuarios'];
-const CARGOS_VALIDOS = ['jefatura','usuarios','supervisor','backoffice','asesor','validacion','grabaciones','seguimiento','programacion','cobranzas','supgrabaciones','backreclutamiento','asesorreclutamiento'];
+const CARGOS_VALIDOS = ['jefatura','usuarios','supervisor','backoffice','asesor','validacion','grabaciones','seguimiento','programacion','cobranzas','calidad','supgrabaciones','backreclutamiento','asesorreclutamiento'];
 
 function normalizarNombrePersonal(nombre) {
   return String(nombre || '').trim().replace(/\s+/g, ' ').toUpperCase();

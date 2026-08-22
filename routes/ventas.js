@@ -7,7 +7,7 @@ const path     = require('path');
 const fs       = require('fs');
 const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositivo, errorId, errorEnum, TIPO_DOC_OK } = require('../middleware/validar');
 
-const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','cobranzas','supgrabaciones'];
+const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','cobranzas','calidad','supgrabaciones'];
 const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz','esperando_tercero','corregir_sec'];
 const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado','programado','conforme','no_conforme','audio_subido'];
 const TRAMOS_SEGUIMIENTO_OK = ['AM','PM','PM 3'];
@@ -536,7 +536,7 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
 // Listado de solo lectura para Cobranzas. Una venta entra desde el momento en
 // que alcanzó por primera vez un estado de instalación y permanece disponible
 // aunque luego avance a otro estado operativo.
-router.get('/cobranzas-listado', auth(['cobranzas','jefatura']), async (req, res) => {
+router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async (req, res) => {
   try {
     const [data] = await db.query(`
       SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
