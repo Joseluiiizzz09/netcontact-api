@@ -551,14 +551,37 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
 // aunque luego avance a otro estado operativo.
 router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async (req, res) => {
   try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS calidad_gestiones (
+        venta_id INT NOT NULL PRIMARY KEY,
+        llamada VARCHAR(40) NOT NULL DEFAULT 'PENDIENTE',
+        whatsapp VARCHAR(40) NOT NULL DEFAULT 'PENDIENTE',
+        servicio_internet VARCHAR(80) NOT NULL DEFAULT 'PENDIENTE',
+        servicio_instalacion VARCHAR(80) NOT NULL DEFAULT 'PENDIENTE',
+        ofrecieron_adicionales VARCHAR(60) NOT NULL DEFAULT 'PENDIENTE',
+        adicional VARCHAR(40) NOT NULL DEFAULT 'PENDIENTE',
+        estado_cliente VARCHAR(60) NOT NULL DEFAULT 'PENDIENTE',
+        actualizado_por_id INT NULL,
+        actualizado_por_nombre VARCHAR(150) NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
     const [data] = await db.query(`
       SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
+             COALESCE(cg.llamada, 'PENDIENTE') AS calidad_llamada,
+             COALESCE(cg.whatsapp, 'PENDIENTE') AS calidad_whatsapp,
+             COALESCE(cg.servicio_internet, 'PENDIENTE') AS calidad_servicio_internet,
+             COALESCE(cg.servicio_instalacion, 'PENDIENTE') AS calidad_servicio_instalacion,
+             COALESCE(cg.ofrecieron_adicionales, 'PENDIENTE') AS calidad_ofrecieron_adicionales,
+             COALESCE(cg.adicional, 'PENDIENTE') AS calidad_adicional,
+             COALESCE(cg.estado_cliente, 'PENDIENTE') AS calidad_estado_cliente,
              COALESCE(inst.fecha_instalacion,
                CASE WHEN REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
                  ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
                THEN v.created_at END
              ) AS fecha_instalacion
         FROM ventas v
+        LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id
         LEFT JOIN (
           SELECT venta_id, MIN(created_at) AS fecha_instalacion
             FROM venta_historial
@@ -576,6 +599,39 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async
   } catch (e) {
     console.error('[GET /ventas/cobranzas-listado]', e.message || e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener clientes instalados' });
+  }
+});
+
+const CALIDAD_CAMPOS = {
+  llamada: ['PENDIENTE','CONTESTA','NO CONTESTA','APAGADO','CORTA LLAMADA'],
+  whatsapp: ['PENDIENTE','SE ENVIA','TIENE','NO TIENE'],
+  servicio_internet: ['PENDIENTE','TODO CORRECTO','INTERMITENCIAS CON EL SERVICIO','NO RECONOCE LA TITULARIDAD','NO ES LA MISMA VELOCIDAD CONTRATADA','PROBLEMA SOLUCIONADO','OTROS'],
+  servicio_instalacion: ['PENDIENTE','TODO CORRECTO','INTERMITENCIAS CON EL SERVICIO','NO RECONOCE LA TITULARIDAD','NO ES LA MISMA VELOCIDAD CONTRATADA','PROBLEMA SOLUCIONADO','OTROS'],
+  ofrecieron_adicionales: ['PENDIENTE','NO','SI','SI, PERO NO SE BRINDO'],
+  adicional: ['PENDIENTE','IPTV','NETFLIX','STAR+','DISNEY+','OTROS','CRUNCHYROLL','REPETIDOR'],
+  estado_cliente: ['PENDIENTE','SATISFECHO','REGULAR','INSATISFECHO','OBSERVADO','NO RECONOCE EL SERVICIO','BAJA'],
+};
+
+router.patch('/calidad/:id', auth(['calidad','jefatura']), async (req, res) => {
+  try {
+    const ventaId = Number(req.params.id);
+    const campo = String(req.body?.campo || '').trim();
+    const valor = String(req.body?.valor || '').trim().toUpperCase();
+    if (!Number.isInteger(ventaId) || ventaId <= 0 || !CALIDAD_CAMPOS[campo] || !CALIDAD_CAMPOS[campo].includes(valor)) {
+      return res.status(400).json({ ok:false, mensaje:'Tipificación de Calidad no válida' });
+    }
+    const [venta] = await db.query('SELECT id FROM ventas WHERE id=? LIMIT 1', [ventaId]);
+    if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
+    await db.query(`
+      INSERT INTO calidad_gestiones (venta_id, ${campo}, actualizado_por_id, actualizado_por_nombre)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE ${campo}=VALUES(${campo}), actualizado_por_id=VALUES(actualizado_por_id),
+        actualizado_por_nombre=VALUES(actualizado_por_nombre), updated_at=CURRENT_TIMESTAMP
+    `, [ventaId, valor, req.user.id, req.user.nombre || req.user.usuario || 'Calidad']);
+    res.json({ ok:true, campo, valor });
+  } catch (e) {
+    console.error('[PATCH /ventas/calidad/:id]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al guardar la tipificación de Calidad' });
   }
 });
 
