@@ -549,7 +549,8 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
 let promesaTablaCalidad;
 function asegurarTablaCalidad() {
   if (!promesaTablaCalidad) {
-    promesaTablaCalidad = db.query(`
+    promesaTablaCalidad = (async () => {
+      await db.query(`
       CREATE TABLE IF NOT EXISTS calidad_gestiones (
         venta_id INT NOT NULL PRIMARY KEY,
         llamada VARCHAR(40) NOT NULL DEFAULT 'PENDIENTE',
@@ -563,7 +564,18 @@ function asegurarTablaCalidad() {
         actualizado_por_nombre VARCHAR(150) NULL,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `).catch(error => { promesaTablaCalidad = null; throw error; });
+      `);
+      const [columnas] = await db.query('SHOW COLUMNS FROM calidad_gestiones');
+      const existentes = new Set(columnas.map(columna => columna.Field));
+      const nuevas = [
+        ['asignado_a_id', 'INT NULL'],
+        ['asignado_a_nombre', 'VARCHAR(150) NULL'],
+        ['asignado_at', 'DATETIME NULL'],
+      ];
+      for (const [columna, definicion] of nuevas) {
+        if (!existentes.has(columna)) await db.query(`ALTER TABLE calidad_gestiones ADD COLUMN ${columna} ${definicion}`);
+      }
+    })().catch(error => { promesaTablaCalidad = null; throw error; });
   }
   return promesaTablaCalidad;
 }
@@ -584,7 +596,12 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async
              COALESCE(cg.servicio_instalacion, 'PENDIENTE') AS calidad_servicio_instalacion,
              COALESCE(cg.ofrecieron_adicionales, 'PENDIENTE') AS calidad_ofrecieron_adicionales,
              COALESCE(cg.adicional, 'PENDIENTE') AS calidad_adicional,
-             COALESCE(cg.estado_cliente, 'PENDIENTE') AS calidad_estado_cliente` : '';
+             COALESCE(cg.estado_cliente, 'PENDIENTE') AS calidad_estado_cliente,
+             cg.asignado_a_id AS calidad_asignado_a_id,
+             cg.asignado_a_nombre AS calidad_asignado_a_nombre,
+             cg.asignado_at AS calidad_asignado_at,
+             cg.actualizado_por_nombre AS calidad_actualizado_por_nombre,
+             cg.updated_at AS calidad_updated_at` : '';
     const joinCalidad = incluyeCalidad ? 'LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id' : '';
     const [data] = await db.query(`
       SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete${camposCalidad},
@@ -608,7 +625,10 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async
              ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
        ORDER BY fecha_instalacion DESC, v.id DESC
     `);
-    res.json({ ok: true, data });
+    const [usuariosCalidad] = incluyeCalidad
+      ? await db.query(`SELECT id, nombre FROM usuarios WHERE cargo='calidad' AND activo=1 ORDER BY nombre`)
+      : [[]];
+    res.json({ ok: true, data, usuariosCalidad });
   } catch (e) {
     console.error('[GET /ventas/cobranzas-listado]', e.message || e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener clientes instalados' });
@@ -649,6 +669,39 @@ router.patch('/calidad/:id', auth(['calidad']), async (req, res) => {
   } catch (e) {
     console.error('[PATCH /ventas/calidad/:id]', e.message || e);
     res.status(500).json({ ok:false, mensaje:'Error al guardar la tipificación de Calidad' });
+  }
+});
+
+router.patch('/calidad/:id/asignar', auth(['calidad']), async (req, res) => {
+  try {
+    if (req.user.cargo !== 'calidad' || req.user.accesoDirectoJefatura) {
+      return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Calidad' });
+    }
+    await asegurarTablaCalidad();
+    const ventaId = Number(req.params.id);
+    const usuarioId = Number(req.body?.usuario_id);
+    if (!Number.isInteger(ventaId) || ventaId <= 0 || !Number.isInteger(usuarioId) || usuarioId <= 0) {
+      return res.status(400).json({ ok:false, mensaje:'Selecciona un responsable de Calidad válido' });
+    }
+    const [[venta], [usuario]] = await Promise.all([
+      db.query('SELECT id FROM ventas WHERE id=? LIMIT 1', [ventaId]),
+      db.query("SELECT id, nombre FROM usuarios WHERE id=? AND cargo='calidad' AND activo=1 LIMIT 1", [usuarioId]),
+    ]);
+    if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
+    if (!usuario.length) return res.status(400).json({ ok:false, mensaje:'El responsable de Calidad no está disponible' });
+    await db.query(`
+      INSERT INTO calidad_gestiones
+        (venta_id, asignado_a_id, asignado_a_nombre, asignado_at, actualizado_por_id, actualizado_por_nombre)
+      VALUES (?, ?, ?, NOW(), ?, ?)
+      ON DUPLICATE KEY UPDATE asignado_a_id=VALUES(asignado_a_id),
+        asignado_a_nombre=VALUES(asignado_a_nombre), asignado_at=NOW(),
+        actualizado_por_id=VALUES(actualizado_por_id), actualizado_por_nombre=VALUES(actualizado_por_nombre),
+        updated_at=CURRENT_TIMESTAMP
+    `, [ventaId, usuario[0].id, usuario[0].nombre, req.user.id, req.user.nombre || req.user.usuario || 'Calidad']);
+    res.json({ ok:true, usuario:usuario[0] });
+  } catch (e) {
+    console.error('[PATCH /ventas/calidad/:id/asignar]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al asignar el responsable de Calidad' });
   }
 });
 
