@@ -165,25 +165,50 @@ router.patch('/:id/desbloquear-login', auth(['jefatura']), async (req, res) => {
 
 // DELETE
 router.delete('/:id', auth(ROLES), async (req, res) => {
+  const conn = await db.getConnection();
   try {
-    const [rows] = await db.query(`SELECT id, usuario, cargo FROM usuarios WHERE id = ?`, [req.params.id]);
-    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
-    if (Number(rows[0].id) === Number(req.user.id))
+    await conn.beginTransaction();
+    const [rows] = await conn.query(`SELECT id, nombre, usuario, cargo FROM usuarios WHERE id = ? FOR UPDATE`, [req.params.id]);
+    if (!rows.length) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, mensaje: 'Usuario no encontrado' });
+    }
+    if (Number(rows[0].id) === Number(req.user.id)) {
+      await conn.rollback();
       return res.status(403).json({ ok: false, mensaje: 'No puedes eliminar tu propia cuenta' });
+    }
     if (rows[0].cargo === 'jefatura') {
-      if (req.user.cargo !== 'jefatura')
+      if (req.user.cargo !== 'jefatura') {
+        await conn.rollback();
         return res.status(403).json({ ok: false, mensaje: 'Solo jefatura puede eliminar cuentas de jefatura' });
-      const [[{ total }]] = await db.query(
+      }
+      const [[{ total }]] = await conn.query(
         'SELECT COUNT(*) AS total FROM usuarios WHERE cargo = ? AND activo = 1',
         ['jefatura']
       );
-      if (total <= 1)
+      if (total <= 1) {
+        await conn.rollback();
         return res.json({ ok: false, mensaje: 'No puedes eliminar el último usuario de Jefatura' });
+      }
     }
-    await db.query(`DELETE FROM usuarios WHERE id = ?`, [req.params.id]);
+    const usuario = rows[0];
+    // Antes de soltar las llaves foráneas, consolida el nombre histórico en
+    // cada registro operativo para que ventas y asignaciones sigan atribuidas.
+    await conn.query(`UPDATE ventas SET asesor_nombre=? WHERE asesor_id=?`, [usuario.nombre, usuario.id]);
+    await conn.query(`UPDATE leads SET asesor_nombre=? WHERE asesor_id=?`, [usuario.nombre, usuario.id]);
+    await conn.query(`UPDATE lead_ciclos_venta SET asesor_nombre=? WHERE asesor_id=?`, [usuario.nombre, usuario.id]);
+    await conn.query(`UPDATE venta_asignaciones SET asesor_anterior_nombre=? WHERE asesor_anterior_id=?`, [usuario.nombre, usuario.id]);
+    await conn.query(`UPDATE venta_asignaciones SET asesor_nuevo_nombre=? WHERE asesor_nuevo_id=?`, [usuario.nombre, usuario.id]);
+    await conn.query(`UPDATE venta_historial SET usuario_nombre=? WHERE usuario_id=?`, [usuario.nombre, usuario.id]);
+    await conn.query(`DELETE FROM usuarios WHERE id = ?`, [usuario.id]);
+    await conn.commit();
     res.json({ ok: true, mensaje: 'Usuario eliminado' });
   } catch(e) {
+    await conn.rollback().catch(() => {});
+    console.error('[ELIMINAR USUARIO]', e.message || e);
     res.status(500).json({ ok: false, mensaje: 'Error al eliminar usuario' });
+  } finally {
+    conn.release();
   }
 });
 

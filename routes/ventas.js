@@ -478,15 +478,15 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
 
     const [result] = await conn.query(`
       INSERT INTO ventas (
-        asesor_id, tipo_doc, dni, nombre, email,
+        asesor_id, asesor_nombre, tipo_doc, dni, nombre, email,
         telefono1, telefono2, departamento, provincia, distrito,
         direccion, coordenadas, fecha_nac, lugar_nac, padre, madre,
         cuota_inst, claro_hogar, tecnologia, paquete,
         full_claro, cant_decos, cant_mesh, plano, estado, observacion,
         lead_id, lead_ciclo_id
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `, [
-      asesorVentaId, v.tipoDoc||'DNI', v.dni||null, v.nombre||null, v.email||null,
+      asesorVentaId, nombreAsesor, v.tipoDoc||'DNI', v.dni||null, v.nombre||null, v.email||null,
       v.telefono1||null, v.telefono2||null, v.departamento||null,
       v.provincia||null, v.distrito||null, v.direccion||null,
       v.coordenadas||null, v.fechaNac||null, v.lugarNac||null,
@@ -657,7 +657,7 @@ router.patch('/calidad/:id', auth(['calidad']), async (req, res) => {
 router.get('/validacion-listado', auth(['validacion','jefatura']), async (req, res) => {
   try {
     const [data] = await db.query(`
-      SELECT v.*, u.nombre AS asesor_nombre, u.sala,
+      SELECT v.*, COALESCE(u.nombre, v.asesor_nombre) AS asesor_nombre, u.sala,
              COALESCE(LOWER((
                SELECT vh.valor_nuevo
                  FROM venta_historial vh
@@ -709,7 +709,7 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     // subconsulta agrupada (no una consulta por fila) para que Super de
     // Grabaciones pueda mostrar "PROGRAMADO: HH:mm / DD/MM/YYYY" cuando el
     // audio todavía no está subido.
-    let sql = `SELECT v.*, u.nombre as asesor_nombre, u.sala, g.nombre as grabando_por_nombre,
+    let sql = `SELECT v.*, COALESCE(u.nombre, v.asesor_nombre) as asesor_nombre, u.sala, g.nombre as grabando_por_nombre,
                ph.fecha_programado,
                ph_prog.estado_prog, ph_prog.usuario_prog, ph_prog.fecha_prog,
                ph_sup.fecha_sup_resultado,
@@ -1208,7 +1208,7 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
     await conn.commit();
 
     const [ventaRows] = await conn.query(`
-      SELECT v.*, u.nombre AS asesor_nombre, u.sala,
+      SELECT v.*, COALESCE(u.nombre, v.asesor_nombre) AS asesor_nombre, u.sala,
              COALESCE(LOWER((
                SELECT vh.valor_nuevo
                  FROM venta_historial vh
