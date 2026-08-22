@@ -546,12 +546,10 @@ router.post('/', auth(['asesor','backoffice','jefatura','usuarios']), async (req
   }
 });
 
-// Listado de solo lectura para Cobranzas. Una venta entra desde el momento en
-// que alcanzó por primera vez un estado de instalación y permanece disponible
-// aunque luego avance a otro estado operativo.
-router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async (req, res) => {
-  try {
-    await db.query(`
+let promesaTablaCalidad;
+function asegurarTablaCalidad() {
+  if (!promesaTablaCalidad) {
+    promesaTablaCalidad = db.query(`
       CREATE TABLE IF NOT EXISTS calidad_gestiones (
         venta_id INT NOT NULL PRIMARY KEY,
         llamada VARCHAR(40) NOT NULL DEFAULT 'PENDIENTE',
@@ -565,7 +563,17 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async
         actualizado_por_nombre VARCHAR(150) NULL,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `).catch(error => { promesaTablaCalidad = null; throw error; });
+  }
+  return promesaTablaCalidad;
+}
+
+// Listado de solo lectura para Cobranzas. Una venta entra desde el momento en
+// que alcanzó por primera vez un estado de instalación y permanece disponible
+// aunque luego avance a otro estado operativo.
+router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async (req, res) => {
+  try {
+    await asegurarTablaCalidad();
     const [data] = await db.query(`
       SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
              COALESCE(cg.llamada, 'PENDIENTE') AS calidad_llamada,
@@ -614,6 +622,7 @@ const CALIDAD_CAMPOS = {
 
 router.patch('/calidad/:id', auth(['calidad','jefatura']), async (req, res) => {
   try {
+    await asegurarTablaCalidad();
     const ventaId = Number(req.params.id);
     const campo = String(req.body?.campo || '').trim();
     const valor = String(req.body?.valor || '').trim().toUpperCase();
