@@ -7,7 +7,7 @@ const path     = require('path');
 const fs       = require('fs');
 const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositivo, errorId, errorEnum, TIPO_DOC_OK } = require('../middleware/validar');
 
-const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','cobranzas','calidad','supgrabaciones'];
+const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','cobranzas','calidad','supcalidad','supgrabaciones'];
 const CACHE_VENTAS_TTL = 5000;
 const cacheVentas = new Map();
 
@@ -598,11 +598,11 @@ function asegurarTablaCalidad() {
 // Listado de solo lectura para Cobranzas. Una venta entra desde el momento en
 // que alcanzó por primera vez un estado de instalación y permanece disponible
 // aunque luego avance a otro estado operativo.
-router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async (req, res) => {
+router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefatura']), async (req, res) => {
   try {
     // Jefatura puede supervisar estos campos únicamente al entrar al módulo
     // mediante Accesos directos; la escritura continúa reservada a Calidad.
-    const incluyeCalidad = req.user.cargo === 'calidad';
+    const incluyeCalidad = ['calidad','supcalidad'].includes(req.user.cargo);
     if (incluyeCalidad) await asegurarTablaCalidad();
     const camposCalidad = incluyeCalidad ? `,
              COALESCE(cg.llamada, 'PENDIENTE') AS calidad_llamada,
@@ -645,7 +645,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async
        ORDER BY fecha_instalacion DESC, v.id DESC
     `);
     const [usuariosCalidad] = incluyeCalidad
-      ? await db.query(`SELECT id, nombre FROM usuarios WHERE cargo='calidad' AND activo=1 ORDER BY nombre`)
+      ? await db.query(`SELECT id, nombre, cargo FROM usuarios WHERE cargo IN ('calidad','supcalidad') AND activo=1 ORDER BY nombre`)
       : [[]];
     res.json({ ok: true, data, usuariosCalidad });
   } catch (e) {
@@ -664,9 +664,9 @@ const CALIDAD_CAMPOS = {
   estado_cliente: ['PENDIENTE','SATISFECHO','REGULAR','INSATISFECHO','OBSERVADO','NO RECONOCE EL SERVICIO','BAJA'],
 };
 
-router.patch('/calidad/:id', auth(['calidad']), async (req, res) => {
+router.patch('/calidad/:id', auth(['calidad','supcalidad']), async (req, res) => {
   try {
-    if (req.user.cargo !== 'calidad' || req.user.accesoDirectoJefatura) {
+    if (!['calidad','supcalidad'].includes(req.user.cargo) || req.user.accesoDirectoJefatura) {
       return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Calidad' });
     }
     await asegurarTablaCalidad();
@@ -693,9 +693,9 @@ router.patch('/calidad/:id', auth(['calidad']), async (req, res) => {
   }
 });
 
-router.patch('/calidad/:id/asignar', auth(['calidad']), async (req, res) => {
+router.patch('/calidad/:id/asignar', auth(['calidad','supcalidad']), async (req, res) => {
   try {
-    if (req.user.cargo !== 'calidad' || req.user.accesoDirectoJefatura) {
+    if (!['calidad','supcalidad'].includes(req.user.cargo) || req.user.accesoDirectoJefatura) {
       return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Calidad' });
     }
     await asegurarTablaCalidad();
@@ -706,7 +706,7 @@ router.patch('/calidad/:id/asignar', auth(['calidad']), async (req, res) => {
     }
     const [[venta], [usuario]] = await Promise.all([
       db.query('SELECT v.id, cg.asignado_a_nombre FROM ventas v LEFT JOIN calidad_gestiones cg ON cg.venta_id=v.id WHERE v.id=? LIMIT 1', [ventaId]),
-      db.query("SELECT id, nombre FROM usuarios WHERE id=? AND cargo='calidad' AND activo=1 LIMIT 1", [usuarioId]),
+      db.query("SELECT id, nombre, cargo FROM usuarios WHERE id=? AND cargo IN ('calidad','supcalidad') AND activo=1 LIMIT 1", [usuarioId]),
     ]);
     if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
     if (!usuario.length) return res.status(400).json({ ok:false, mensaje:'El responsable de Calidad no está disponible' });
@@ -728,9 +728,9 @@ router.patch('/calidad/:id/asignar', auth(['calidad']), async (req, res) => {
   }
 });
 
-router.patch('/calidad/:id/comentario', auth(['calidad']), async (req, res) => {
+router.patch('/calidad/:id/comentario', auth(['calidad','supcalidad']), async (req, res) => {
   try {
-    if (req.user.cargo !== 'calidad' || req.user.accesoDirectoJefatura) {
+    if (!['calidad','supcalidad'].includes(req.user.cargo) || req.user.accesoDirectoJefatura) {
       return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Calidad' });
     }
     await asegurarTablaCalidad();
@@ -756,7 +756,7 @@ router.patch('/calidad/:id/comentario', auth(['calidad']), async (req, res) => {
   }
 });
 
-router.get('/calidad/:id/historial', auth(['calidad','jefatura']), async (req, res) => {
+router.get('/calidad/:id/historial', auth(['calidad','supcalidad','jefatura']), async (req, res) => {
   try {
     await asegurarTablaCalidad();
     const ventaId = Number(req.params.id);
@@ -766,6 +766,44 @@ router.get('/calidad/:id/historial', auth(['calidad','jefatura']), async (req, r
   } catch (e) {
     console.error('[GET /ventas/calidad/:id/historial]', e.message || e);
     res.status(500).json({ ok:false, mensaje:'Error al obtener el historial de Calidad' });
+  }
+});
+
+// Rendimiento diario del equipo de Calidad. Una llamada cuenta una sola vez
+// por cliente y usuario cuando se tipifica el campo LLAMADA. El estado final
+// mostrado es el vigente para ese cliente, de modo que los totales del panel
+// coinciden con la gestión que actualmente se ve en Calidad.
+router.get('/calidad-rendimiento', auth(['supcalidad','jefatura']), async (req, res) => {
+  try {
+    await asegurarTablaCalidad();
+    const fecha = String(req.query?.fecha || '').trim();
+    const fechaSql = /^\d{4}-\d{2}-\d{2}$/.test(fecha) ? fecha : null;
+    const [data] = await db.query(`
+      SELECT u.id, u.nombre, u.cargo,
+             COUNT(DISTINCT actividad.venta_id) AS llamadas_dia,
+             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='PENDIENTE' THEN actividad.venta_id END) AS pendiente,
+             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='SATISFECHO' THEN actividad.venta_id END) AS satisfecho,
+             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='REGULAR' THEN actividad.venta_id END) AS regular,
+             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='INSATISFECHO' THEN actividad.venta_id END) AS insatisfecho,
+             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='OBSERVADO' THEN actividad.venta_id END) AS observado,
+             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='NO RECONOCE EL SERVICIO' THEN actividad.venta_id END) AS no_reconoce_servicio,
+             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='BAJA' THEN actividad.venta_id END) AS baja
+        FROM usuarios u
+        LEFT JOIN (
+          SELECT DISTINCT usuario_id, venta_id
+            FROM calidad_historial
+           WHERE campo='llamada'
+             AND DATE(created_at)=COALESCE(?, DATE(CONVERT_TZ(NOW(), @@session.time_zone, '-05:00')))
+        ) actividad ON actividad.usuario_id=u.id
+        LEFT JOIN calidad_gestiones cg ON cg.venta_id=actividad.venta_id
+       WHERE u.activo=1 AND u.cargo IN ('calidad','supcalidad')
+       GROUP BY u.id,u.nombre,u.cargo
+       ORDER BY CASE WHEN u.cargo='supcalidad' THEN 0 ELSE 1 END, u.nombre
+    `, [fechaSql]);
+    res.json({ ok:true, fecha:fechaSql, data });
+  } catch (e) {
+    console.error('[GET /ventas/calidad-rendimiento]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al obtener el rendimiento de Calidad' });
   }
 });
 
