@@ -571,10 +571,25 @@ function asegurarTablaCalidad() {
         ['asignado_a_id', 'INT NULL'],
         ['asignado_a_nombre', 'VARCHAR(150) NULL'],
         ['asignado_at', 'DATETIME NULL'],
+        ['comentario', 'TEXT NULL'],
+        ['tratamiento_at', 'DATETIME NULL'],
       ];
       for (const [columna, definicion] of nuevas) {
         if (!existentes.has(columna)) await db.query(`ALTER TABLE calidad_gestiones ADD COLUMN ${columna} ${definicion}`);
       }
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS calidad_historial (
+          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          venta_id INT NOT NULL,
+          campo VARCHAR(60) NOT NULL,
+          valor_anterior TEXT NULL,
+          valor_nuevo TEXT NULL,
+          usuario_id INT NULL,
+          usuario_nombre VARCHAR(150) NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_calidad_historial_venta (venta_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
     })().catch(error => { promesaTablaCalidad = null; throw error; });
   }
   return promesaTablaCalidad;
@@ -600,6 +615,8 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async
              cg.asignado_a_id AS calidad_asignado_a_id,
              cg.asignado_a_nombre AS calidad_asignado_a_nombre,
              cg.asignado_at AS calidad_asignado_at,
+             cg.comentario AS calidad_comentario,
+             cg.tratamiento_at AS calidad_tratamiento_at,
              cg.actualizado_por_nombre AS calidad_actualizado_por_nombre,
              cg.updated_at AS calidad_updated_at` : '';
     const joinCalidad = incluyeCalidad ? 'LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id' : '';
@@ -657,14 +674,16 @@ router.patch('/calidad/:id', auth(['calidad']), async (req, res) => {
     if (!Number.isInteger(ventaId) || ventaId <= 0 || !CALIDAD_CAMPOS[campo] || !CALIDAD_CAMPOS[campo].includes(valor)) {
       return res.status(400).json({ ok:false, mensaje:'Tipificación de Calidad no válida' });
     }
-    const [venta] = await db.query('SELECT id FROM ventas WHERE id=? LIMIT 1', [ventaId]);
+    const [venta] = await db.query(`SELECT v.id, cg.${campo} AS valor_anterior FROM ventas v LEFT JOIN calidad_gestiones cg ON cg.venta_id=v.id WHERE v.id=? LIMIT 1`, [ventaId]);
     if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
     await db.query(`
-      INSERT INTO calidad_gestiones (venta_id, ${campo}, actualizado_por_id, actualizado_por_nombre)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO calidad_gestiones (venta_id, ${campo}, tratamiento_at, actualizado_por_id, actualizado_por_nombre)
+      VALUES (?, ?, NOW(), ?, ?)
       ON DUPLICATE KEY UPDATE ${campo}=VALUES(${campo}), actualizado_por_id=VALUES(actualizado_por_id),
-        actualizado_por_nombre=VALUES(actualizado_por_nombre), updated_at=CURRENT_TIMESTAMP
+        actualizado_por_nombre=VALUES(actualizado_por_nombre), tratamiento_at=COALESCE(tratamiento_at, NOW()), updated_at=CURRENT_TIMESTAMP
     `, [ventaId, valor, req.user.id, req.user.nombre || req.user.usuario || 'Calidad']);
+    await db.query(`INSERT INTO calidad_historial (venta_id,campo,valor_anterior,valor_nuevo,usuario_id,usuario_nombre) VALUES (?,?,?,?,?,?)`,
+      [ventaId, campo, venta[0].valor_anterior || 'PENDIENTE', valor, req.user.id, req.user.nombre || req.user.usuario || 'Calidad']);
     res.json({ ok:true, campo, valor });
   } catch (e) {
     console.error('[PATCH /ventas/calidad/:id]', e.message || e);
@@ -684,24 +703,67 @@ router.patch('/calidad/:id/asignar', auth(['calidad']), async (req, res) => {
       return res.status(400).json({ ok:false, mensaje:'Selecciona un responsable de Calidad válido' });
     }
     const [[venta], [usuario]] = await Promise.all([
-      db.query('SELECT id FROM ventas WHERE id=? LIMIT 1', [ventaId]),
+      db.query('SELECT v.id, cg.asignado_a_nombre FROM ventas v LEFT JOIN calidad_gestiones cg ON cg.venta_id=v.id WHERE v.id=? LIMIT 1', [ventaId]),
       db.query("SELECT id, nombre FROM usuarios WHERE id=? AND cargo='calidad' AND activo=1 LIMIT 1", [usuarioId]),
     ]);
     if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
     if (!usuario.length) return res.status(400).json({ ok:false, mensaje:'El responsable de Calidad no está disponible' });
     await db.query(`
       INSERT INTO calidad_gestiones
-        (venta_id, asignado_a_id, asignado_a_nombre, asignado_at, actualizado_por_id, actualizado_por_nombre)
-      VALUES (?, ?, ?, NOW(), ?, ?)
+        (venta_id, asignado_a_id, asignado_a_nombre, asignado_at, tratamiento_at, actualizado_por_id, actualizado_por_nombre)
+      VALUES (?, ?, ?, NOW(), NOW(), ?, ?)
       ON DUPLICATE KEY UPDATE asignado_a_id=VALUES(asignado_a_id),
         asignado_a_nombre=VALUES(asignado_a_nombre), asignado_at=NOW(),
         actualizado_por_id=VALUES(actualizado_por_id), actualizado_por_nombre=VALUES(actualizado_por_nombre),
-        updated_at=CURRENT_TIMESTAMP
+        tratamiento_at=COALESCE(tratamiento_at, NOW()), updated_at=CURRENT_TIMESTAMP
     `, [ventaId, usuario[0].id, usuario[0].nombre, req.user.id, req.user.nombre || req.user.usuario || 'Calidad']);
+    await db.query(`INSERT INTO calidad_historial (venta_id,campo,valor_anterior,valor_nuevo,usuario_id,usuario_nombre) VALUES (?,?,?,?,?,?)`,
+      [ventaId, 'responsable', venta[0].asignado_a_nombre || 'SIN ASIGNAR', usuario[0].nombre, req.user.id, req.user.nombre || req.user.usuario || 'Calidad']);
     res.json({ ok:true, usuario:usuario[0] });
   } catch (e) {
     console.error('[PATCH /ventas/calidad/:id/asignar]', e.message || e);
     res.status(500).json({ ok:false, mensaje:'Error al asignar el responsable de Calidad' });
+  }
+});
+
+router.patch('/calidad/:id/comentario', auth(['calidad']), async (req, res) => {
+  try {
+    if (req.user.cargo !== 'calidad' || req.user.accesoDirectoJefatura) {
+      return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Calidad' });
+    }
+    await asegurarTablaCalidad();
+    const ventaId = Number(req.params.id);
+    const comentario = String(req.body?.comentario || '').trim();
+    if (!Number.isInteger(ventaId) || ventaId <= 0 || comentario.length > 1500) {
+      return res.status(400).json({ ok:false, mensaje:'El comentario no puede superar 1500 caracteres' });
+    }
+    const [venta] = await db.query('SELECT v.id, cg.comentario FROM ventas v LEFT JOIN calidad_gestiones cg ON cg.venta_id=v.id WHERE v.id=? LIMIT 1', [ventaId]);
+    if (!venta.length) return res.status(404).json({ ok:false, mensaje:'Cliente no encontrado' });
+    await db.query(`
+      INSERT INTO calidad_gestiones (venta_id, comentario, tratamiento_at, actualizado_por_id, actualizado_por_nombre)
+      VALUES (?, ?, NOW(), ?, ?)
+      ON DUPLICATE KEY UPDATE comentario=VALUES(comentario), tratamiento_at=COALESCE(tratamiento_at, NOW()),
+        actualizado_por_id=VALUES(actualizado_por_id), actualizado_por_nombre=VALUES(actualizado_por_nombre), updated_at=CURRENT_TIMESTAMP
+    `, [ventaId, comentario || null, req.user.id, req.user.nombre || req.user.usuario || 'Calidad']);
+    await db.query(`INSERT INTO calidad_historial (venta_id,campo,valor_anterior,valor_nuevo,usuario_id,usuario_nombre) VALUES (?,?,?,?,?,?)`,
+      [ventaId, 'comentario', venta[0].comentario || '', comentario, req.user.id, req.user.nombre || req.user.usuario || 'Calidad']);
+    res.json({ ok:true, comentario });
+  } catch (e) {
+    console.error('[PATCH /ventas/calidad/:id/comentario]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al guardar el comentario de Calidad' });
+  }
+});
+
+router.get('/calidad/:id/historial', auth(['calidad','jefatura']), async (req, res) => {
+  try {
+    await asegurarTablaCalidad();
+    const ventaId = Number(req.params.id);
+    if (!Number.isInteger(ventaId) || ventaId <= 0) return res.status(400).json({ ok:false, mensaje:'Cliente no válido' });
+    const [data] = await db.query(`SELECT id,campo,valor_anterior,valor_nuevo,usuario_nombre,created_at FROM calidad_historial WHERE venta_id=? ORDER BY created_at DESC,id DESC`, [ventaId]);
+    res.json({ ok:true, data });
+  } catch (e) {
+    console.error('[GET /ventas/calidad/:id/historial]', e.message || e);
+    res.status(500).json({ ok:false, mensaje:'Error al obtener el historial de Calidad' });
   }
 });
 
