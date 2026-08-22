@@ -573,23 +573,26 @@ function asegurarTablaCalidad() {
 // aunque luego avance a otro estado operativo.
 router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async (req, res) => {
   try {
-    await asegurarTablaCalidad();
-    const [data] = await db.query(`
-      SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
+    const incluyeCalidad = req.user.cargo === 'calidad' && !req.user.accesoDirectoJefatura;
+    if (incluyeCalidad) await asegurarTablaCalidad();
+    const camposCalidad = incluyeCalidad ? `,
              COALESCE(cg.llamada, 'PENDIENTE') AS calidad_llamada,
              COALESCE(cg.whatsapp, 'PENDIENTE') AS calidad_whatsapp,
              COALESCE(cg.servicio_internet, 'PENDIENTE') AS calidad_servicio_internet,
              COALESCE(cg.servicio_instalacion, 'PENDIENTE') AS calidad_servicio_instalacion,
              COALESCE(cg.ofrecieron_adicionales, 'PENDIENTE') AS calidad_ofrecieron_adicionales,
              COALESCE(cg.adicional, 'PENDIENTE') AS calidad_adicional,
-             COALESCE(cg.estado_cliente, 'PENDIENTE') AS calidad_estado_cliente,
+             COALESCE(cg.estado_cliente, 'PENDIENTE') AS calidad_estado_cliente` : '';
+    const joinCalidad = incluyeCalidad ? 'LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id' : '';
+    const [data] = await db.query(`
+      SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete${camposCalidad},
              COALESCE(inst.fecha_instalacion,
                CASE WHEN REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
                  ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
                THEN v.created_at END
              ) AS fecha_instalacion
         FROM ventas v
-        LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id
+        ${joinCalidad}
         LEFT JOIN (
           SELECT venta_id, MIN(created_at) AS fecha_instalacion
             FROM venta_historial
@@ -620,8 +623,11 @@ const CALIDAD_CAMPOS = {
   estado_cliente: ['PENDIENTE','SATISFECHO','REGULAR','INSATISFECHO','OBSERVADO','NO RECONOCE EL SERVICIO','BAJA'],
 };
 
-router.patch('/calidad/:id', auth(['calidad','jefatura']), async (req, res) => {
+router.patch('/calidad/:id', auth(['calidad']), async (req, res) => {
   try {
+    if (req.user.cargo !== 'calidad' || req.user.accesoDirectoJefatura) {
+      return res.status(403).json({ ok:false, mensaje:'Esta gestión es exclusiva del área de Calidad' });
+    }
     await asegurarTablaCalidad();
     const ventaId = Number(req.params.id);
     const campo = String(req.body?.campo || '').trim();
