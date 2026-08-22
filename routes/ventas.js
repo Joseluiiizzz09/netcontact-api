@@ -39,6 +39,15 @@ const ESTADOS_PROGRAMACION = [
   'APROBADO','PROGRAMADO','BLOQUEADO','SIN_AGENDA','CARACTER_ESPECIAL',
   'FRAUDE','ZONA_RESTRINGIDA','INSTALADO','PENDIENTE','CAIDA',
 ];
+// Una venta que ya llegó a Programado o avanzó a campo no debe desaparecer de
+// Seguimiento por una observación posterior de Grabaciones. Ambos flujos
+// continúan en paralelo sin obligar a repetir Programación → Conforme.
+const ESTADOS_SEGUIMIENTO_INICIADO = [
+  'PROGRAMADO','EN_EJECUCION','INSTALADO','CAIDA','RECHAZO_CAMPO','TECNICO_CASA',
+  'LEVANTAR_SOT','TECNICOS_CAMINO','INSTALADO_NO_VALIDADO','REASIGNACION',
+  'DERIVADO_PLANTA_EXTERNA','SERVICIO_ACTIVO','RECHAZO_MESA',
+];
+const ESTADOS_SEGUIMIENTO_INICIADO_SET = new Set(ESTADOS_SEGUIMIENTO_INICIADO);
 
 function fechaPeruHoy() {
   const ahora = new Date();
@@ -809,11 +818,13 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
     }
 
     if (cargoEfectivo === 'seguimiento') {
-      sql += ` AND LOWER(TRIM(COALESCE(v.estado_supgrab, ''))) = 'conforme'`;
+      sql += ` AND (LOWER(TRIM(COALESCE(v.estado_supgrab, ''))) = 'conforme'
+                    OR UPPER(TRIM(COALESCE(v.estado, ''))) IN (${ESTADOS_SEGUIMIENTO_INICIADO.map(() => '?').join(',')}))`;
+      params.push(...ESTADOS_SEGUIMIENTO_INICIADO);
     }
 
     if (seguimiento_campo === '1') {
-      sql += ` AND UPPER(TRIM(v.estado)) IN ('EN_EJECUCION','INSTALADO','CAIDA','RECHAZO_CAMPO','TECNICO_CASA','LEVANTAR_SOT','TECNICOS_CAMINO','INSTALADO_NO_VALIDADO','REASIGNACION','DERIVADO_PLANTA_EXTERNA','SERVICIO_ACTIVO','RECHAZO_MESA')`;
+      sql += ` AND UPPER(TRIM(v.estado)) IN ('PROGRAMADO','EN_EJECUCION','INSTALADO','CAIDA','RECHAZO_CAMPO','TECNICO_CASA','LEVANTAR_SOT','TECNICOS_CAMINO','INSTALADO_NO_VALIDADO','REASIGNACION','DERIVADO_PLANTA_EXTERNA','SERVICIO_ACTIVO','RECHAZO_MESA')`;
     }
 
     if (cargoEfectivo === 'programacion' || programacion === '1') {
@@ -1267,8 +1278,12 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       return res.status(403).json({ ok: false, mensaje: 'Solo puedes gestionar ventas con estado VALIDADO' });
     }
 
-    if (cargoEfectivo === 'seguimiento' && String(rows[0].estado_supgrab || '').trim().toLowerCase() !== 'conforme') {
-      return res.status(403).json({ ok: false, mensaje: 'Solo puedes gestionar ventas marcadas como CONFORME' });
+    if (
+      cargoEfectivo === 'seguimiento' &&
+      String(rows[0].estado_supgrab || '').trim().toLowerCase() !== 'conforme' &&
+      !ESTADOS_SEGUIMIENTO_INICIADO_SET.has(String(rows[0].estado || '').trim().toUpperCase())
+    ) {
+      return res.status(403).json({ ok: false, mensaje: 'La venta todavía no ha ingresado a Seguimiento' });
     }
 
     // Asesor solo puede modificar sus propias ventas
