@@ -396,6 +396,7 @@ async function initDB() {
       ['obs_seguimiento',    'TEXT NULL'],
       ['tramo_seguimiento',  'VARCHAR(20) NULL'],
       ['motivo_seguimiento', 'VARCHAR(150) NULL'],
+      ['seguimiento_ingresado_at', 'DATETIME NULL'],
     ];
     for (const [columna, definicion] of columnasSeguimiento) {
       await conn.query(`ALTER TABLE ventas ADD COLUMN ${columna} ${definicion}`)
@@ -449,6 +450,20 @@ async function initDB() {
       `, [tabla, nombre]);
       if (!existe.total) await conn.query(`CREATE INDEX ${nombre} ON ${tabla}(${columnas})`);
     }
+    // Consolida la primera entrada histórica. Desde ese momento la venta no
+    // vuelve a salir de Seguimiento aunque otra etapa cambie posteriormente.
+    await conn.query(`
+      UPDATE ventas v
+      JOIN (
+        SELECT venta_id, MIN(created_at) AS primera_entrada
+          FROM venta_historial
+         WHERE (campo = 'estado_supgrab' AND LOWER(TRIM(valor_nuevo)) = 'conforme')
+            OR campo IN ('obs_seguimiento','tramo_seguimiento','motivo_seguimiento')
+         GROUP BY venta_id
+      ) h ON h.venta_id = v.id
+         SET v.seguimiento_ingresado_at = h.primera_entrada
+       WHERE v.seguimiento_ingresado_at IS NULL
+    `);
 
     for (const [columna, definicion] of [['lead_id', 'INT NULL'], ['lead_ciclo_id', 'INT NULL']]) {
       await conn.query(`ALTER TABLE ventas ADD COLUMN ${columna} ${definicion}`)
