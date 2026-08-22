@@ -573,7 +573,9 @@ function asegurarTablaCalidad() {
 // aunque luego avance a otro estado operativo.
 router.get('/cobranzas-listado', auth(['cobranzas','calidad','jefatura']), async (req, res) => {
   try {
-    const incluyeCalidad = req.user.cargo === 'calidad' && !req.user.accesoDirectoJefatura;
+    // Jefatura puede supervisar estos campos únicamente al entrar al módulo
+    // mediante Accesos directos; la escritura continúa reservada a Calidad.
+    const incluyeCalidad = req.user.cargo === 'calidad';
     if (incluyeCalidad) await asegurarTablaCalidad();
     const camposCalidad = incluyeCalidad ? `,
              COALESCE(cg.llamada, 'PENDIENTE') AS calidad_llamada,
