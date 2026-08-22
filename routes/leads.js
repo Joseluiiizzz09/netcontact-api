@@ -1881,6 +1881,17 @@ router.delete('/:id', auth(ROLES_BO), async (req, res) => {
     const [actores] = await conn.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
     const lead = rows[0];
     const actor = actores[0] || {};
+    // Un teléfono real no puede desaparecer por una acción operativa de Back
+    // Data. Las limpiezas de registros válidos quedan reservadas a Jefatura;
+    // Back Data conserva la posibilidad de retirar filas vacías o corruptas.
+    const n1Normalizado = normalizarN1(lead.n1);
+    if (n1Normalizado.length >= 8 && req.user.cargo !== 'jefatura') {
+      await conn.rollback();
+      return res.status(403).json({
+        ok: false,
+        mensaje: 'Número protegido: solo Jefatura puede eliminar un teléfono válido. El registro permanece en KRONO.',
+      });
+    }
     await conn.query(`DELETE FROM leads WHERE id = ?`, [req.params.id]);
     await conn.query(
       `INSERT INTO eliminaciones
@@ -1902,7 +1913,7 @@ router.delete('/:id', auth(ROLES_BO), async (req, res) => {
 });
 
 // DELETE /api/leads/fecha/:fecha
-router.delete('/fecha/:fecha', auth(ROLES_BO), async (req, res) => {
+router.delete('/fecha/:fecha', auth(['jefatura']), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
