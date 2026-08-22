@@ -11,6 +11,19 @@ const ROLES_BO  = ['backoffice','jefatura','usuarios'];
 const ROLES_ALL = ['backoffice','jefatura','usuarios','asesor','supervisor','supgrabaciones'];
 // Sólo estos estados cierran definitivamente el flujo de asignación/rotación.
 const TIPIF_PROHIBIDAS_ASIGNACION = new Set(['VENTA CERRADA', 'NO TOCAR', 'SH NO TOCAR', 'NO ROTAR', 'SH NO ROTAR']);
+const CACHE_LISTADO_TTL = 5000;
+const cacheListados = new Map();
+
+function cacheListadoGet(clave) {
+  const item = cacheListados.get(clave);
+  if (!item || item.expira <= Date.now()) { cacheListados.delete(clave); return null; }
+  return item.payload;
+}
+
+function cacheListadoSet(clave, payload) {
+  if (cacheListados.size >= 200) cacheListados.delete(cacheListados.keys().next().value);
+  cacheListados.set(clave, { payload, expira: Date.now() + CACHE_LISTADO_TTL });
+}
 
 function tipificacionProhibida(valor) {
   return TIPIF_PROHIBIDAS_ASIGNACION.has(String(valor || '').trim().toUpperCase());
@@ -293,6 +306,11 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       return res.status(403).json({ ok: false, mensaje: 'Sin permiso para consultar esta área' });
     }
     const cargoEfectivo = area || req.user.cargo;
+    // La clave siempre incluye la identidad y los permisos efectivos: nunca
+    // se comparte información entre usuarios, incluso si tienen igual cargo.
+    const cacheClave = `${req.user.id}|${req.user.cargo}|${JSON.stringify(permisosUsuario)}|${req.originalUrl}`;
+    const cacheHit = cacheListadoGet(cacheClave);
+    if (cacheHit) return res.json(cacheHit);
 
     const errGet = validar([errorFecha(fecha, 'fecha'), errorFecha(desde, 'desde'), errorFecha(hasta, 'hasta')]);
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
@@ -300,13 +318,29 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const numeroBusqueda = busquedaRaw.replace(/\D/g, '').slice(0, 20);
     const esBusquedaNumerica = /^[\d\s()+.\-]+$/.test(busquedaRaw);
 
+    // Los contadores se agregan una sola vez y luego se enlazan. Antes eran
+    // cinco subconsultas correlacionadas por cada lead (decenas de miles de
+    // ejecuciones por petición), principal causa de saturación en hora pico.
     let sql = `SELECT l.*, u.nombre as asesor_nombre_db,
-      (SELECT COUNT(*) FROM lead_ciclos_venta lcv WHERE lcv.lead_id=l.id) AS ciclos_venta,
-      (SELECT COUNT(*) FROM ventas vx WHERE TRIM(vx.telefono1)=TRIM(l.n1)) AS ventas_registradas,
-      (SELECT lcv.id FROM lead_ciclos_venta lcv WHERE lcv.lead_id=l.id AND lcv.estado='ABIERTO' ORDER BY lcv.id DESC LIMIT 1) AS ciclo_abierto_id,
-      (SELECT lcv.numero_ciclo FROM lead_ciclos_venta lcv WHERE lcv.lead_id=l.id AND lcv.estado='ABIERTO' ORDER BY lcv.id DESC LIMIT 1) AS ciclo_abierto_numero,
-      (SELECT lcv.tipo FROM lead_ciclos_venta lcv WHERE lcv.lead_id=l.id AND lcv.estado='ABIERTO' ORDER BY lcv.id DESC LIMIT 1) AS ciclo_abierto_tipo
-      FROM leads l LEFT JOIN usuarios u ON l.asesor_id = u.id WHERE 1=1`;
+      COALESCE(lc.ciclos_venta, 0) AS ciclos_venta,
+      COALESCE(vx.ventas_registradas, 0) AS ventas_registradas,
+      ciclo.id AS ciclo_abierto_id,
+      ciclo.numero_ciclo AS ciclo_abierto_numero,
+      ciclo.tipo AS ciclo_abierto_tipo
+      FROM leads l
+      LEFT JOIN usuarios u ON l.asesor_id = u.id
+      LEFT JOIN (
+        SELECT lead_id, COUNT(*) AS ciclos_venta,
+               MAX(CASE WHEN estado='ABIERTO' THEN id END) AS ciclo_abierto_id
+        FROM lead_ciclos_venta GROUP BY lead_id
+      ) lc ON lc.lead_id = l.id
+      LEFT JOIN lead_ciclos_venta ciclo ON ciclo.id = lc.ciclo_abierto_id
+      LEFT JOIN (
+        SELECT TRIM(telefono1) AS telefono1, COUNT(*) AS ventas_registradas
+        FROM ventas WHERE telefono1 IS NOT NULL AND TRIM(telefono1)<>''
+        GROUP BY TRIM(telefono1)
+      ) vx ON vx.telefono1 = TRIM(l.n1)
+      WHERE 1=1`;
     const params = [];
     let visorAsesorId = null;
     let visorAsesorNombre = '';
@@ -563,7 +597,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
           return normalizarFechaAsignacion(ultimaAsignacion?.fecha || l.fecha) === fecha;
         })
       : salida;
-    res.json({ ok: true, data: dataFiltrada });
+    const payload = { ok: true, data: dataFiltrada };
+    cacheListadoSet(cacheClave, payload);
+    res.json(payload);
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener leads' });

@@ -420,6 +420,7 @@ async function initDB() {
     const indices = [
       ['idx_ventas_created', 'ventas', 'created_at'],
       ['idx_ventas_asesor', 'ventas', 'asesor_id'],
+      ['idx_ventas_asesor_created', 'ventas', 'asesor_id, created_at'],
       ['idx_ventas_estado', 'ventas', 'estado'],
       ['idx_ventas_dni', 'ventas', 'dni'],
       ['idx_ventas_telefono_id', 'ventas', 'telefono1, id'],
@@ -431,11 +432,14 @@ async function initDB() {
       ['idx_leads_n1', 'leads', 'n1'],
       ['idx_leads_n2', 'leads', 'n2'],
       ['idx_leads_fecha_created', 'leads', 'fecha, created_at'],
+      ['idx_leads_asesor_fecha_created', 'leads', 'asesor_id, fecha, created_at'],
       ['idx_leads_fecha_n1', 'leads', 'fecha, n1'],
       ['idx_frases_created', 'frases', 'created_at'],
       ['idx_fotos_venta', 'venta_fotos', 'venta_id'],
       ['idx_venta_asignaciones_venta', 'venta_asignaciones', 'venta_id, created_at'],
       ['idx_venta_historial_venta', 'venta_historial', 'venta_id, created_at'],
+      ['idx_vh_campo_venta_fecha', 'venta_historial', 'campo, venta_id, created_at'],
+      ['idx_vh_tipo_venta_fecha', 'venta_historial', 'tipo, venta_id, created_at'],
       ['idx_vh_validacion', 'venta_historial', 'campo, tipo, venta_id, id'],
     ];
     for (const [nombre, tabla, columnas] of indices) {

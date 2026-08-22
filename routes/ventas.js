@@ -8,6 +8,19 @@ const fs       = require('fs');
 const { validar, errorTexto, errorEmail, errorDni, errorFecha, errorEnteroPositivo, errorId, errorEnum, TIPO_DOC_OK } = require('../middleware/validar');
 
 const ROLES_VENTAS       = ['asesor','supervisor','backoffice','validacion','grabaciones','seguimiento','jefatura','usuarios','programacion','cobranzas','calidad','supgrabaciones'];
+const CACHE_VENTAS_TTL = 5000;
+const cacheVentas = new Map();
+
+function cacheVentasGet(clave) {
+  const item = cacheVentas.get(clave);
+  if (!item || item.expira <= Date.now()) { cacheVentas.delete(clave); return null; }
+  return item.payload;
+}
+
+function cacheVentasSet(clave, payload) {
+  if (cacheVentas.size >= 200) cacheVentas.delete(cacheVentas.keys().next().value);
+  cacheVentas.set(clave, { payload, expira: Date.now() + CACHE_VENTAS_TTL });
+}
 const ESTADOS_GRAB_OK    = ['pendiente','grabando','grabado','observado','revisado','corta_llamada','suplantacion','no_desea','no_contesta','buzon','buzon_voz','esperando_tercero','corregir_sec'];
 const ESTADOS_SUPGRAB_OK = ['sin_revisar','aprobado','rechazado','observado','programado','conforme','no_conforme','audio_subido'];
 const TRAMOS_SEGUIMIENTO_OK = ['AM','PM','PM 3'];
@@ -601,6 +614,11 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
       return res.status(403).json({ ok: false, mensaje: 'Sin permiso para consultar esta área' });
     }
     const cargoEfectivo = area || req.user.cargo;
+    // Aislamiento estricto por usuario, cargo, permisos y consulta completa.
+    // Evita ráfagas duplicadas de focus/poll sin mezclar respuestas privadas.
+    const cacheClave = `${req.user.id}|${req.user.cargo}|${JSON.stringify(permisosUsuario)}|${req.originalUrl}`;
+    const cacheHit = cacheVentasGet(cacheClave);
+    if (cacheHit) return res.json(cacheHit);
 
     // Una venta PROGRAMADA espera como máximo dos horas la decisión de
     // Sup. Grabaciones. Al vencer vuelve a la cola de Grabaciones.
@@ -743,7 +761,9 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
 
     sql += ` ORDER BY v.created_at DESC`;
     const [data] = await db.query(sql, params);
-    res.json({ ok: true, data });
+    const payload = { ok: true, data };
+    cacheVentasSet(cacheClave, payload);
+    res.json(payload);
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener ventas' });
