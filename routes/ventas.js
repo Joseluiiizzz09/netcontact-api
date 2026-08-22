@@ -861,10 +861,14 @@ router.get('/', auth(ROLES_VENTAS), async (req, res) => {
                  GROUP BY venta_id
                ) ph_caida ON ph_caida.venta_id = v.id
                LEFT JOIN (
-                 SELECT venta_id, MAX(created_at) AS fecha_whatsapp_enviado
-                 FROM venta_historial
-                 WHERE tipo = 'WHATSAPP'
-                 GROUP BY venta_id
+                 SELECT venta_id, created_at AS fecha_whatsapp_enviado, valor_nuevo AS plantilla_whatsapp_enviado
+                 FROM (
+                   SELECT venta_id, created_at, valor_nuevo,
+                          ROW_NUMBER() OVER (PARTITION BY venta_id ORDER BY created_at DESC) AS rn
+                   FROM venta_historial
+                   WHERE tipo = 'WHATSAPP'
+                 ) x
+                 WHERE rn = 1
                ) ph_wa ON ph_wa.venta_id = v.id
                LEFT JOIN (
                  SELECT h1.venta_id, h1.valor_nuevo AS estado_prog,
@@ -1662,13 +1666,26 @@ router.patch('/:id/datos', auth(['supervisor','jefatura','seguimiento','usuarios
   }
 });
 
+// Plantillas de WhatsApp de seguimiento aprobadas en Meta para la cuenta SEGUIMIENTO.
+// 'seguimiento_agosto' arma dia/hora desde fecha_programada + tramo_seguimiento;
+// las otras dos solo necesitan {{nombre}}.
+const PLANTILLAS_SEGUIMIENTO_WA = {
+  seguimiento_agosto:                 { requiereProgramacion: true,  etiqueta: 'SEGUIMIENTO' },
+  seguimiento_del_tecnico:             { requiereProgramacion: false, etiqueta: 'SEGUIMIENTO TECNICO' },
+  instalacin_no_concretada__rechazada: { requiereProgramacion: false, etiqueta: 'INST RECHAZADA' },
+};
+
 // ===== POST /:id/enviar-seguimiento-whatsapp =====
-// Envía la plantilla 'seguimiento_agosto' (cuenta SEGUIMIENTO de leads-api) con
-// nombre, día/mes de fecha_programada y horario según tramo_seguimiento (AM/PM).
+// Envía una de las plantillas de PLANTILLAS_SEGUIMIENTO_WA (cuenta SEGUIMIENTO
+// de leads-api) según req.body.plantilla.
 router.post('/:id/enviar-seguimiento-whatsapp', auth(['seguimiento', 'jefatura']), async (req, res) => {
   const ventaId = Number(req.params.id);
   if (!Number.isInteger(ventaId) || ventaId <= 0)
     return res.status(400).json({ ok: false, mensaje: 'ID de venta inválido.' });
+
+  const plantilla = String(req.body?.plantilla || '').trim();
+  const config = PLANTILLAS_SEGUIMIENTO_WA[plantilla];
+  if (!config) return res.status(400).json({ ok: false, mensaje: 'Plantilla de WhatsApp inválida.' });
 
   try {
     const [rows] = await db.query(
@@ -1678,17 +1695,26 @@ router.post('/:id/enviar-seguimiento-whatsapp', auth(['seguimiento', 'jefatura']
     const venta = rows[0];
     if (!venta) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada.' });
     if (!venta.telefono1) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene teléfono registrado.' });
-    if (!venta.fecha_programada) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene fecha programada.' });
 
-    const tramo = String(venta.tramo_seguimiento || '').trim().toUpperCase();
-    const horaTexto = tramo === 'AM' ? '9 AM a 1 PM' : tramo === 'PM' ? '2 PM a 6 PM' : tramo === 'PM 3' ? '6 PM a 8 PM' : null;
-    if (!horaTexto) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene tramo de seguimiento (AM/PM) definido.' });
+    let valores = { nombre: venta.nombre };
+    let detalleDescripcion = '';
 
-    // No usar new Date(string): "YYYY-MM-DD" se interpreta como medianoche UTC y
-    // al convertir a hora de Peru (UTC-5) retrocede un dia. Se extrae directo del texto.
-    const partesFecha = String(venta.fecha_programada).match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (!partesFecha) return res.status(400).json({ ok: false, mensaje: 'Fecha programada inválida.' });
-    const dia = `${partesFecha[3]}/${partesFecha[2]}`;
+    if (config.requiereProgramacion) {
+      if (!venta.fecha_programada) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene fecha programada.' });
+
+      const tramo = String(venta.tramo_seguimiento || '').trim().toUpperCase();
+      const horaTexto = tramo === 'AM' ? '9 AM a 1 PM' : tramo === 'PM' ? '2 PM a 6 PM' : tramo === 'PM 3' ? '6 PM a 8 PM' : null;
+      if (!horaTexto) return res.status(400).json({ ok: false, mensaje: 'La venta no tiene tramo de seguimiento (AM/PM) definido.' });
+
+      // No usar new Date(string): "YYYY-MM-DD" se interpreta como medianoche UTC y
+      // al convertir a hora de Peru (UTC-5) retrocede un dia. Se extrae directo del texto.
+      const partesFecha = String(venta.fecha_programada).match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!partesFecha) return res.status(400).json({ ok: false, mensaje: 'Fecha programada inválida.' });
+      const dia = `${partesFecha[3]}/${partesFecha[2]}`;
+
+      valores = { nombre: venta.nombre, dia, hora: horaTexto };
+      detalleDescripcion = ` — horario ${horaTexto}, fecha ${dia}`;
+    }
 
     let data;
     try {
@@ -1698,8 +1724,8 @@ router.post('/:id/enviar-seguimiento-whatsapp', auth(['seguimiento', 'jefatura']
         body: JSON.stringify({
           cuenta: 'SEGUIMIENTO',
           telefono: venta.telefono1,
-          plantilla: 'seguimiento_agosto',
-          valores: { nombre: venta.nombre, dia, hora: horaTexto },
+          plantilla,
+          valores,
         }),
       });
       data = await resp.json().catch(() => ({}));
@@ -1714,7 +1740,9 @@ router.post('/:id/enviar-seguimiento-whatsapp', auth(['seguimiento', 'jefatura']
     const actor = await obtenerActor(db, req.user.id);
     await registrarHistorial(db, ventaId, actor, {
       tipo: 'WHATSAPP',
-      descripcion: `Mensaje de WhatsApp (seguimiento) enviado a ${venta.telefono1} — horario ${horaTexto}, fecha ${dia}`,
+      campo: 'plantilla_whatsapp',
+      valorNuevo: plantilla,
+      descripcion: `Mensaje de WhatsApp (${config.etiqueta}) enviado a ${venta.telefono1}${detalleDescripcion}`,
     });
 
     res.json({ ok: true, mensaje: 'Mensaje de WhatsApp enviado.', whatsapp_message_id: data.whatsapp_message_id || null });
