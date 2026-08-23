@@ -926,25 +926,71 @@ router.get('/cobranza/:id/historial', auth(['cobranzas','jefatura']), async (req
   }
 });
 
-// Rendimiento diario del equipo de Calidad. Una llamada cuenta una sola vez
-// por cliente y usuario cuando se tipifica el campo LLAMADA. El estado final
-// mostrado es el vigente para ese cliente, de modo que los totales del panel
-// coinciden con la gestión que actualmente se ve en Calidad.
-router.get('/calidad-rendimiento', auth(['supcalidad','jefatura']), async (req, res) => {
-  try {
-    await asegurarTablaCalidad();
-    const fecha = String(req.query?.fecha || '').trim();
-    const fechaSql = /^\d{4}-\d{2}-\d{2}$/.test(fecha) ? fecha : null;
-    const [data] = await db.query(`
-      SELECT u.id, u.nombre, u.cargo,
-             COUNT(DISTINCT actividad.venta_id) AS llamadas_dia,
+const CALIDAD_RENDIMIENTO_CASES = `
              COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='PENDIENTE' THEN actividad.venta_id END) AS pendiente,
              COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='SATISFECHO' THEN actividad.venta_id END) AS satisfecho,
              COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='REGULAR' THEN actividad.venta_id END) AS regular,
              COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='INSATISFECHO' THEN actividad.venta_id END) AS insatisfecho,
              COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='OBSERVADO' THEN actividad.venta_id END) AS observado,
              COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='NO RECONOCE EL SERVICIO' THEN actividad.venta_id END) AS no_reconoce_servicio,
-             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='BAJA' THEN actividad.venta_id END) AS baja
+             COUNT(DISTINCT CASE WHEN COALESCE(cg.estado_cliente,'PENDIENTE')='BAJA' THEN actividad.venta_id END) AS baja`;
+
+// Rendimiento diario o mensual del equipo de Calidad. Una llamada cuenta una sola vez
+// por cliente y usuario cuando se tipifica el campo LLAMADA. El estado final
+// mostrado es el vigente para ese cliente, de modo que los totales del panel
+// coinciden con la gestión que actualmente se ve en Calidad.
+router.get('/calidad-rendimiento', auth(['supcalidad','jefatura']), async (req, res) => {
+  try {
+    await asegurarTablaCalidad();
+    const anio = Number(req.query?.anio);
+    const mes = Number(req.query?.mes);
+    if (Number.isInteger(anio) && anio >= 2000 && anio <= 2100 && Number.isInteger(mes) && mes >= 1 && mes <= 12) {
+      const desde = `${anio}-${String(mes).padStart(2, '0')}-01`;
+      const siguiente = new Date(anio, mes, 1);
+      const hasta = `${siguiente.getFullYear()}-${String(siguiente.getMonth() + 1).padStart(2, '0')}-01`;
+      const [[porUsuario], [porDia]] = await Promise.all([
+        db.query(`
+          SELECT u.id, u.nombre, u.cargo,
+                 COUNT(DISTINCT actividad.venta_id) AS gestiones,${CALIDAD_RENDIMIENTO_CASES}
+            FROM usuarios u
+            LEFT JOIN (
+              SELECT DISTINCT usuario_id, venta_id
+                FROM calidad_historial
+               WHERE campo='llamada'
+                 AND CONVERT_TZ(created_at, @@session.time_zone, '-05:00') >= ?
+                 AND CONVERT_TZ(created_at, @@session.time_zone, '-05:00') < ?
+            ) actividad ON actividad.usuario_id=u.id
+            LEFT JOIN calidad_gestiones cg ON cg.venta_id=actividad.venta_id
+           WHERE u.activo=1 AND u.cargo IN ('calidad','supcalidad')
+           GROUP BY u.id,u.nombre,u.cargo
+           ORDER BY CASE WHEN u.cargo='supcalidad' THEN 0 ELSE 1 END, u.nombre
+        `, [desde, hasta]),
+        db.query(`
+          SELECT u.id, DAY(actividad.dia) AS dia,
+                 COUNT(DISTINCT actividad.venta_id) AS gestiones,${CALIDAD_RENDIMIENTO_CASES}
+            FROM usuarios u
+            JOIN (
+              SELECT DISTINCT usuario_id, venta_id,
+                     DATE(CONVERT_TZ(created_at, @@session.time_zone, '-05:00')) AS dia
+                FROM calidad_historial
+               WHERE campo='llamada'
+                 AND CONVERT_TZ(created_at, @@session.time_zone, '-05:00') >= ?
+                 AND CONVERT_TZ(created_at, @@session.time_zone, '-05:00') < ?
+            ) actividad ON actividad.usuario_id=u.id
+            LEFT JOIN calidad_gestiones cg ON cg.venta_id=actividad.venta_id
+           WHERE u.activo=1 AND u.cargo IN ('calidad','supcalidad')
+           GROUP BY u.id, DAY(actividad.dia)
+           ORDER BY dia
+        `, [desde, hasta]),
+      ]);
+      return res.json({ ok:true, modo:'mensual', anio, mes, porUsuario, porDia });
+    }
+
+    const fecha = String(req.query?.fecha || '').trim();
+    const fechaSql = /^\d{4}-\d{2}-\d{2}$/.test(fecha) ? fecha : null;
+    const [data] = await db.query(`
+      SELECT u.id, u.nombre, u.cargo,
+             COUNT(DISTINCT actividad.venta_id) AS llamadas_dia,${CALIDAD_RENDIMIENTO_CASES}
         FROM usuarios u
         LEFT JOIN (
           SELECT DISTINCT usuario_id, venta_id
