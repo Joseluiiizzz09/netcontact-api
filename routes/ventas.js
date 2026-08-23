@@ -641,7 +641,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
     // Jefatura puede supervisar estos campos únicamente al entrar al módulo
     // mediante Accesos directos; la escritura continúa reservada a Calidad.
     const incluyeCalidad = ['calidad','supcalidad'].includes(req.user.cargo);
-    const incluyeCobranza = req.user.cargo === 'cobranzas';
+    const incluyeCobranza = req.user.cargo === 'cobranzas' || (req.user.permisos || []).includes('cobranzas');
     if (incluyeCalidad) await asegurarTablaCalidad();
     if (incluyeCobranza) await asegurarTablaCobranza();
     const camposCalidad = incluyeCalidad ? `,
@@ -824,7 +824,8 @@ router.get('/calidad/:id/historial', auth(['calidad','supcalidad','jefatura']), 
 const COBRANZA_TIPIFICACIONES = ['PAGADO', 'PENDIENTE', 'BAJA', 'SUSPENDIDO', 'VENCIDO'];
 
 function esEscrituraCobranzaValida(req) {
-  return req.user.cargo === 'cobranzas' && !req.user.accesoDirectoJefatura;
+  const tieneCargoCobranza = req.user.cargo === 'cobranzas' || (req.user.permisos || []).includes('cobranzas');
+  return tieneCargoCobranza && !req.user.accesoDirectoJefatura;
 }
 
 router.patch('/cobranza/:id/ciclo', auth(['cobranzas']), async (req, res) => {
