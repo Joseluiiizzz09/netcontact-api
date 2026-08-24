@@ -705,6 +705,17 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
              cb.updated_at AS cobranza_updated_at` : '';
     const joinCalidad = incluyeCalidad ? 'LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id' : '';
     const joinCobranza = incluyeCobranza ? 'LEFT JOIN cobranza_gestiones cb ON cb.venta_id = v.id' : '';
+    // Calidad solo debe ver clientes cuyo estado ACTUAL siga siendo de instalación
+    // (si la venta cayó/fue rechazada después de instalada, sale del listado de Calidad).
+    // Cobranza sí conserva la lógica histórica: una vez instalada, permanece disponible
+    // para gestión de cobranza aunque el estado operativo avance después.
+    const soloInstaladoActual = incluyeCalidad && !incluyeCobranza;
+    const filtroInstalado = soloInstaladoActual
+      ? `REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
+             ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')`
+      : `inst.fecha_instalacion IS NOT NULL
+          OR REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
+             ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')`;
     const [data] = await db.query(`
       SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
              COALESCE(u.nombre, v.asesor_nombre) AS vendedor_nombre${camposCalidad}${camposCobranza},
@@ -725,9 +736,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
                  ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
            GROUP BY venta_id
         ) inst ON inst.venta_id = v.id
-       WHERE inst.fecha_instalacion IS NOT NULL
-          OR REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
-             ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
+       WHERE ${filtroInstalado}
        ORDER BY fecha_instalacion DESC, v.id DESC
     `);
     const [usuariosCalidad] = incluyeCalidad
