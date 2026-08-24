@@ -365,6 +365,12 @@ async function initDB() {
     }
     await conn.query(`ALTER TABLE eliminaciones ADD COLUMN snapshot_json LONGTEXT NULL`)
       .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    await conn.query(`ALTER TABLE eliminaciones ADD COLUMN restored_at DATETIME NULL`)
+      .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    await conn.query(`ALTER TABLE eliminaciones ADD COLUMN restored_by_id INT NULL`)
+      .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+    await conn.query(`ALTER TABLE eliminaciones ADD COLUMN restored_by_nombre VARCHAR(150) NULL`)
+      .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
 
     // Responsable de "GRABANDO" en Grabaciones — columna independiente del
     // estado_grab (que se mantiene únicamente en {"grabando"}), nullable
