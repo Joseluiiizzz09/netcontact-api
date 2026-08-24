@@ -13,6 +13,14 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('
 const ROLES_BACK = ['backreclutamiento', 'jefatura', 'usuarios'];
 const ROLES_ALL  = ['backreclutamiento', 'jefatura', 'usuarios', 'asesorreclutamiento'];
 
+function normalizarN1(valor) {
+  return String(valor || '').replace(/\D+/g, '');
+}
+
+function normalizarUsuarioWhatsapp(valor) {
+  return String(valor || '').trim().replace(/^@+/, '').substring(0, 100);
+}
+
 function fechaPeruHoy() {
   const ahora = new Date();
   const peru  = new Date(ahora.getTime() + ahora.getTimezoneOffset()*60000 + (-5*60*60000));
@@ -75,15 +83,23 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
     const ids = [];
 
     for (const l of items) {
+      const n1Normalizado = normalizarN1(l.n1);
+      const usuarioWhatsapp = normalizarUsuarioWhatsapp(l.usuario_whatsapp);
       const errores = validar([
         errorFecha(l.fecha || fechaHoy, 'fecha'),
-        errorTexto(l.n1, 'n1', { requerido: true, max: 30 }),
+        errorTexto(l.n1, 'n1', { max: 30 }),
+        errorTexto(usuarioWhatsapp, 'usuario_whatsapp', { max: 100 }),
       ]);
       if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+      if (!n1Normalizado && !usuarioWhatsapp) {
+        return res.status(400).json({ ok: false, mensaje: 'Ingresa un N1 o un usuario de WhatsApp' });
+      }
     }
 
     for (const l of items) {
-      if (!l.n1) continue;
+      const n1Normalizado = normalizarN1(l.n1);
+      const usuarioWhatsapp = normalizarUsuarioWhatsapp(l.usuario_whatsapp);
+      if (!n1Normalizado && !usuarioWhatsapp) continue;
       const fechaLead = l.fecha || fechaHoy;
 
       let asesorId = null;
@@ -103,11 +119,11 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
 
       const [result] = await db.query(`
         INSERT INTO leads_reclutamiento
-          (campana, departamento, provincia, distrito, n1, n2, asesor_id, asesor_nombre,
+          (campana, departamento, provincia, distrito, n1, n2, usuario_whatsapp, asesor_id, asesor_nombre,
            fecha, hora_asig, sin_asignar, historial, usuario_back_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `, [
-        l.campana||'', l.departamento||'', l.provincia||'', l.distrito||'', l.n1, l.n2||null,
+        l.campana||'', l.departamento||'', l.provincia||'', l.distrito||'', l.n1||null, l.n2||null, usuarioWhatsapp||null,
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, req.user.id,
       ]);
       ids.push(result.insertId);
