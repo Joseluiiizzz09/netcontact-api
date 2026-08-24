@@ -2002,7 +2002,7 @@ router.get('/masivo-elegibles', auth(['jefatura']), async (req, res) => {
     if (desde) { condiciones.push('l.fecha >= ?'); params.push(desde); }
     if (hasta) { condiciones.push('l.fecha <= ?'); params.push(hasta); }
     const [data] = await db.query(`
-      SELECT l.id, l.n1, l.n2, l.campana, l.distrito, l.asesor_nombre, l.fecha,
+      SELECT l.id, l.n1, l.n2, l.usuario_whatsapp, l.campana, l.distrito, l.asesor_nombre, l.fecha,
              l.tipif_vend, l.masivo_lote_id, l.masivo_fecha
         FROM leads l
        WHERE ${condiciones.join(' AND ')}
