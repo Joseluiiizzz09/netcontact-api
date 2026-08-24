@@ -49,7 +49,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const errGet = validar([errorFecha(fecha, 'fecha')]);
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
 
-    let sql = `SELECT l.* FROM leads_reclutamiento l WHERE 1=1`;
+    let sql = `SELECT l.*, ub.nombre AS creado_por_nombre FROM leads_reclutamiento l LEFT JOIN usuarios ub ON ub.id = l.usuario_back_id WHERE 1=1`;
     const params = [];
 
     if (req.user.cargo === 'asesorreclutamiento') {
@@ -220,11 +220,31 @@ router.patch('/:id/obs', auth(ROLES_ALL), async (req, res) => {
   }
 });
 
-// PATCH /api/leads-reclutamiento/:id/datos-back — compatibilidad con la
-// llamada existente en Backdatareclutamiento.jsx; sin campos comerciales
-// (tipo_contacto/dirección/coordenadas/obs_back no existen en este módulo).
+// PATCH /api/leads-reclutamiento/:id/datos-back — editar campaña/contacto de
+// un candidato ya creado (campaña, N1, N2, usuario de WhatsApp).
 router.patch('/:id/datos-back', auth(ROLES_BACK), async (req, res) => {
-  res.json({ ok: true, mensaje: 'Sin datos adicionales para este módulo' });
+  try {
+    const n1Normalizado = normalizarN1(req.body.n1);
+    const usuarioWhatsapp = normalizarUsuarioWhatsapp(req.body.usuario_whatsapp);
+    const errores = validar([
+      errorTexto(req.body.campana, 'campana', { max: 100 }),
+      errorTexto(req.body.n1, 'n1', { max: 30 }),
+      errorTexto(usuarioWhatsapp, 'usuario_whatsapp', { max: 100 }),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+    if (!n1Normalizado && !usuarioWhatsapp) {
+      return res.status(400).json({ ok: false, mensaje: 'Ingresa un N1 o un usuario de WhatsApp' });
+    }
+    const [rows] = await db.query(`SELECT id FROM leads_reclutamiento WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Candidato no encontrado' });
+    await db.query(`
+      UPDATE leads_reclutamiento SET campana=?, n1=?, n2=?, usuario_whatsapp=? WHERE id=?
+    `, [req.body.campana||'', req.body.n1||null, req.body.n2||null, usuarioWhatsapp||null, req.params.id]);
+    res.json({ ok: true, mensaje: 'Candidato actualizado' });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al actualizar candidato' });
+  }
 });
 
 // DELETE /api/leads-reclutamiento/:id
