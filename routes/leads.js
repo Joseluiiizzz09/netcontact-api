@@ -1955,4 +1955,86 @@ router.get('/fecha-peru', auth(ROLES_ALL), (req, res) => {
   res.json({ ok: true, fecha: fechaPeruHoy(), hora: horaPeruAhora() });
 });
 
+// ===== Envío masivo (exclusivo Jefatura) =====
+// Arma lotes de números para copiar y pegar en una plataforma externa de
+// envío masivo. Excluye leads ya tipificados SIN COBERTURA / VENTA CERRADA
+// (no tiene sentido volver a contactarlos). Deja un registro interno
+// (leads_masivo_lotes + leads.masivo_lote_id) para diferenciar qué leads ya
+// entraron a un envío masivo anterior.
+let promesaTablaMasivo;
+function asegurarTablaMasivo() {
+  if (!promesaTablaMasivo) {
+    promesaTablaMasivo = (async () => {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS leads_masivo_lotes (
+          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          cantidad INT NOT NULL,
+          creado_por_id INT NULL,
+          creado_por_nombre VARCHAR(150) NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+      const [columnas] = await db.query('SHOW COLUMNS FROM leads');
+      const existentes = new Set(columnas.map(columna => columna.Field));
+      const nuevas = [
+        ['masivo_lote_id', 'INT NULL'],
+        ['masivo_fecha', 'DATETIME NULL'],
+      ];
+      for (const [columna, definicion] of nuevas) {
+        if (!existentes.has(columna)) await db.query(`ALTER TABLE leads ADD COLUMN ${columna} ${definicion}`);
+      }
+    })().catch(error => { promesaTablaMasivo = null; throw error; });
+  }
+  return promesaTablaMasivo;
+}
+
+router.get('/masivo-elegibles', auth(['jefatura']), async (req, res) => {
+  try {
+    await asegurarTablaMasivo();
+    const { campana, distrito, desde, hasta } = req.query;
+    const condiciones = [
+      'l.lead_origen_id IS NULL',
+      `UPPER(TRIM(COALESCE(l.tipif_vend, ''))) NOT IN ('SIN COBERTURA', 'VENTA CERRADA')`,
+    ];
+    const params = [];
+    if (campana) { condiciones.push('l.campana = ?'); params.push(campana); }
+    if (distrito) { condiciones.push('l.distrito = ?'); params.push(distrito); }
+    if (desde) { condiciones.push('l.fecha >= ?'); params.push(desde); }
+    if (hasta) { condiciones.push('l.fecha <= ?'); params.push(hasta); }
+    const [data] = await db.query(`
+      SELECT l.id, l.n1, l.n2, l.campana, l.distrito, l.asesor_nombre, l.fecha,
+             l.tipif_vend, l.masivo_lote_id, l.masivo_fecha
+        FROM leads l
+       WHERE ${condiciones.join(' AND ')}
+       ORDER BY l.fecha DESC, l.id DESC
+       LIMIT 5000
+    `, params);
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error('[GET /leads/masivo-elegibles]', e.message || e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener leads elegibles para envío masivo' });
+  }
+});
+
+router.post('/masivo-lote', auth(['jefatura']), async (req, res) => {
+  try {
+    await asegurarTablaMasivo();
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(id => Number.isInteger(id) && id > 0) : [];
+    if (!ids.length) return res.status(400).json({ ok: false, mensaje: 'No se seleccionó ningún lead' });
+    const [resultado] = await db.query(
+      'INSERT INTO leads_masivo_lotes (cantidad, creado_por_id, creado_por_nombre) VALUES (?, ?, ?)',
+      [ids.length, req.user.id, req.user.nombre || req.user.usuario || 'Jefatura']
+    );
+    const loteId = resultado.insertId;
+    await db.query(
+      `UPDATE leads SET masivo_lote_id = ?, masivo_fecha = NOW() WHERE id IN (${ids.map(() => '?').join(',')})`,
+      [loteId, ...ids]
+    );
+    res.json({ ok: true, lote_id: loteId, cantidad: ids.length });
+  } catch (e) {
+    console.error('[POST /leads/masivo-lote]', e.message || e);
+    res.status(500).json({ ok: false, mensaje: 'Error al registrar el lote de envío masivo' });
+  }
+});
+
 module.exports = router;
