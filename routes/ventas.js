@@ -1113,19 +1113,25 @@ router.get('/calidad-rendimiento', auth(['supcalidad','jefatura']), async (req, 
 // Programación, Seguimiento, WhatsApp y Grabaciones que esta pantalla no usa.
 router.get('/validacion-listado', auth(['validacion','jefatura']), async (req, res) => {
   try {
+    // Resolver el último estado en bloque. La subconsulta correlacionada anterior
+    // recorría venta_historial una vez por cada venta y terminaba bloqueando el
+    // endpoint cuando crecía el historial.
     const [data] = await db.query(`
       SELECT v.*, COALESCE(u.nombre, v.asesor_nombre) AS asesor_nombre, u.sala,
-             COALESCE(LOWER((
-               SELECT vh.valor_nuevo
-                 FROM venta_historial vh
-                WHERE vh.venta_id = v.id
-                  AND vh.campo = 'estado'
-                  AND vh.tipo = 'CAMBIO_VALIDACION'
-                ORDER BY vh.id DESC
-                LIMIT 1
-             )), 'venta') AS estado_validacion
+             COALESCE(LOWER(cv.valor_nuevo), 'venta') AS estado_validacion
         FROM ventas v
         LEFT JOIN usuarios u ON v.asesor_id = u.id
+        LEFT JOIN (
+          SELECT vh.venta_id, vh.valor_nuevo
+            FROM venta_historial vh
+            INNER JOIN (
+              SELECT venta_id, MAX(id) AS ultimo_id
+                FROM venta_historial
+               WHERE campo = 'estado'
+                 AND tipo = 'CAMBIO_VALIDACION'
+               GROUP BY venta_id
+            ) ult ON ult.ultimo_id = vh.id
+        ) cv ON cv.venta_id = v.id
        ORDER BY v.created_at DESC
     `);
     res.json({ ok: true, data });
