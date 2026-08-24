@@ -2009,7 +2009,14 @@ router.get('/masivo-elegibles', auth(['jefatura']), async (req, res) => {
        ORDER BY l.fecha DESC, l.id DESC
        LIMIT 5000
     `, params);
-    res.json({ ok: true, data });
+    const [catalogos] = await db.query(`
+      SELECT DISTINCT l.campana, l.distrito FROM leads l
+       WHERE l.lead_origen_id IS NULL
+         AND UPPER(TRIM(COALESCE(l.tipif_vend, ''))) NOT IN ('SIN COBERTURA', 'VENTA CERRADA')
+    `);
+    const campanas = [...new Set(catalogos.map(c => c.campana).filter(Boolean))].sort();
+    const distritos = [...new Set(catalogos.map(c => c.distrito).filter(Boolean))].sort();
+    res.json({ ok: true, data, filtros: { campanas, distritos } });
   } catch (e) {
     console.error('[GET /leads/masivo-elegibles]', e.message || e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener leads elegibles para envío masivo' });
