@@ -274,6 +274,7 @@ async function expirarProgramacionesVencidas() {
      WHERE LOWER(TRIM(COALESCE(estado_supgrab, ''))) = 'programado'
        AND programacion_expira_at IS NOT NULL
        AND programacion_expira_at <= NOW()
+       AND seguimiento_ingresado_at IS NULL
   `).catch(error => {
     console.error('[EXPIRAR PROGRAMACIONES]', error.message);
   }).finally(() => {
@@ -1718,7 +1719,13 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       SELECT id, asesor_id, estado, obs_backoffice, observacion,
              obs_programacion, sot, fecha_programada, obs_validacion, obs_supgrab,
              estado_supgrab, estado_grab, audio_path, obs_seguimiento,
-             tramo_seguimiento, motivo_seguimiento, seguimiento_ingresado_at
+             tramo_seguimiento, motivo_seguimiento, seguimiento_ingresado_at,
+             EXISTS (
+               SELECT 1 FROM venta_historial vh
+                WHERE vh.venta_id = ventas.id
+                  AND vh.campo = 'estado'
+                  AND UPPER(TRIM(vh.valor_nuevo)) = 'PROGRAMADO'
+             ) AS tuvo_programacion
         FROM ventas
        WHERE id = ?
     `, [req.params.id]);
@@ -1730,6 +1737,27 @@ router.patch('/:id', auth(ROLES_VENTAS), async (req, res) => {
       return res.status(403).json({ ok: false, mensaje: 'Sin permiso para operar en esta área' });
     }
     const cargoEfectivo = areaSolicitada || req.user.cargo;
+
+    const modificaFlujo = estado !== undefined || estado_supgrab !== undefined ||
+      estado_grab !== undefined || fecha_programada !== undefined;
+    if (rows[0].seguimiento_ingresado_at && cargoEfectivo !== 'seguimiento' && modificaFlujo) {
+      return res.status(409).json({
+        ok: false,
+        mensaje: 'Esta venta ya ingresó a Seguimiento y no puede retroceder a una etapa anterior.',
+      });
+    }
+
+    const resultadoSuper = String(estado_supgrab || '').trim().toLowerCase();
+    if (
+      cargoEfectivo === 'supgrabaciones' &&
+      rows[0].tuvo_programacion &&
+      ['aprobado', 'observado'].includes(resultadoSuper)
+    ) {
+      return res.status(409).json({
+        ok: false,
+        mensaje: 'Esta venta está en el segundo ciclo. Selecciona CONFORME, NO CONFORME o RECHAZADO.',
+      });
+    }
 
     if (cargoEfectivo === 'grabaciones' && String(rows[0].estado || '').toUpperCase() !== 'VALIDADO') {
       return res.status(403).json({ ok: false, mensaje: 'Solo puedes gestionar ventas con estado VALIDADO' });
