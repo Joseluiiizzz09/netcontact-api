@@ -382,12 +382,15 @@ router.post('/:id/entrevista', auth(ROLES_ALL), async (req, res) => {
 router.get('/entrevistas', auth(ROLES_ENTREVISTAS), async (req, res) => {
   try {
     await asegurarTablaEntrevistas();
+    // LEFT JOIN a propósito: si el lead de origen se elimina de la Base, la
+    // entrevista ya agendada debe seguir apareciendo en este listado (solo se
+    // pierde el dato de campaña/N1/N2 del lead, no el registro de la entrevista).
     const [data] = await db.query(`
       SELECT e.id, e.nombre_postulante, e.numero, e.numero_ref, e.turno, e.fecha_agendamiento,
              e.observacion, e.tipificacion, e.creado_por_nombre, e.created_at,
              l.campana, l.n1 AS lead_n1, l.n2 AS lead_n2
         FROM reclutamiento_entrevistas e
-        JOIN leads_reclutamiento l ON l.id = e.lead_id
+        LEFT JOIN leads_reclutamiento l ON l.id = e.lead_id
        ORDER BY e.fecha_agendamiento DESC, e.id DESC
     `);
     res.json({ ok: true, data });
