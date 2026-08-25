@@ -8,10 +8,36 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../database');
 const auth    = require('../middleware/auth');
-const { validar, errorTexto, errorFecha, errorHora, errorHistorial } = require('../middleware/validar');
+const { validar, errorTexto, errorFecha, errorHora, errorHistorial, errorEnum } = require('../middleware/validar');
 
 const ROLES_BACK = ['backreclutamiento', 'jefatura', 'usuarios'];
 const ROLES_ALL  = ['backreclutamiento', 'jefatura', 'usuarios', 'asesorreclutamiento'];
+const ROLES_ENTREVISTAS = ['entrevistas', 'backreclutamiento', 'jefatura', 'usuarios'];
+const TURNOS_ENTREVISTA = ['TURNO 1', 'TURNO 2'];
+
+let promesaTablaEntrevistas;
+function asegurarTablaEntrevistas() {
+  if (!promesaTablaEntrevistas) {
+    promesaTablaEntrevistas = db.query(`
+      CREATE TABLE IF NOT EXISTS reclutamiento_entrevistas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        nombre_postulante VARCHAR(150) NOT NULL,
+        numero VARCHAR(30) NOT NULL,
+        numero_ref VARCHAR(30) NULL,
+        turno VARCHAR(20) NOT NULL,
+        fecha_agendamiento DATE NOT NULL,
+        observacion VARCHAR(2000) NULL,
+        creado_por_id INT NULL,
+        creado_por_nombre VARCHAR(150) NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_entrevistas_lead (lead_id),
+        INDEX idx_entrevistas_fecha (fecha_agendamiento)
+      )
+    `).catch(error => { promesaTablaEntrevistas = null; throw error; });
+  }
+  return promesaTablaEntrevistas;
+}
 
 function normalizarN1(valor) {
   return String(valor || '').replace(/\D+/g, '');
@@ -278,6 +304,57 @@ router.delete('/:id', auth(ROLES_BACK), async (req, res) => {
     res.status(500).json({ ok: false, mensaje: 'Error al eliminar candidato' });
   } finally {
     conn?.release();
+  }
+});
+
+// POST /api/leads-reclutamiento/:id/entrevista — agenda una entrevista al
+// tipificar un candidato como VENTA CERRADA ("Acepta propuesta").
+router.post('/:id/entrevista', auth(ROLES_ALL), async (req, res) => {
+  try {
+    await asegurarTablaEntrevistas();
+    const { nombre_postulante, numero, numero_ref, turno, fecha_agendamiento, observacion } = req.body;
+    const errores = validar([
+      errorTexto(nombre_postulante, 'nombre_postulante', { requerido: true, max: 150 }),
+      errorTexto(numero, 'numero', { requerido: true, max: 30 }),
+      errorTexto(numero_ref, 'numero_ref', { max: 30 }),
+      errorTexto(turno, 'turno', { requerido: true, max: 20 }),
+      errorEnum(turno, 'turno', TURNOS_ENTREVISTA),
+      errorFecha(fecha_agendamiento, 'fecha_agendamiento'),
+      errorTexto(observacion, 'observacion', { max: 2000 }),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+    if (!fecha_agendamiento) return res.status(400).json({ ok: false, mensaje: 'fecha_agendamiento es obligatoria' });
+    const [rows] = await db.query(`SELECT id FROM leads_reclutamiento WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Candidato no encontrado' });
+    await db.query(`
+      INSERT INTO reclutamiento_entrevistas
+        (lead_id, nombre_postulante, numero, numero_ref, turno, fecha_agendamiento, observacion, creado_por_id, creado_por_nombre)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `, [req.params.id, nombre_postulante.trim(), numero.trim(), (numero_ref||'').trim()||null, turno, fecha_agendamiento,
+        (observacion||'').trim()||null, req.user.id, req.user.nombre || req.user.usuario || 'Back Data']);
+    res.json({ ok: true, mensaje: 'Entrevista agendada' });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al agendar la entrevista' });
+  }
+});
+
+// GET /api/leads-reclutamiento/entrevistas — listado para el apartado de Entrevistas
+router.get('/entrevistas', auth(ROLES_ENTREVISTAS), async (req, res) => {
+  try {
+    await asegurarTablaEntrevistas();
+    const [data] = await db.query(`
+      SELECT e.id, e.nombre_postulante, e.numero, e.numero_ref, e.turno, e.fecha_agendamiento,
+             e.observacion, e.creado_por_nombre, e.created_at,
+             l.campana, l.n1 AS lead_n1, l.n2 AS lead_n2
+        FROM reclutamiento_entrevistas e
+        JOIN leads_reclutamiento l ON l.id = e.lead_id
+       ORDER BY e.fecha_agendamiento DESC, e.id DESC
+    `);
+    res.json({ ok: true, data });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener entrevistas' });
   }
 });
 
