@@ -1596,7 +1596,8 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
     await conn.beginTransaction();
 
     const [rows] = await conn.query(
-      `SELECT id, estado, obs_validacion FROM ventas WHERE id = ? FOR UPDATE`,
+      `SELECT id, estado, obs_validacion, estado_grab, estado_supgrab
+         FROM ventas WHERE id = ? FOR UPDATE`,
       [ventaId]
     );
     if (!rows.length) {
@@ -1648,10 +1649,24 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
     const estadoAnterior      = venta.estado || 'VENTA';
 
     if (nuevoEstado) {
-      await conn.query(
-        `UPDATE ventas SET estado = ?, obs_validacion = ? WHERE id = ?`,
-        [nuevoEstado, nuevoHistorialTexto, ventaId]
-      );
+      if (tipificacion !== 'validado') {
+        // Una venta que todavía no superó Validación no puede conservar un
+        // GRABANDO/GRABADO de un intento anterior. Se reinicia únicamente la
+        // etapa operativa; el historial y los archivos permanecen auditables.
+        await conn.query(
+          `UPDATE ventas
+              SET estado = ?, obs_validacion = ?, estado_grab = 'pendiente',
+                  estado_supgrab = 'sin_revisar', grabando_por_id = NULL,
+                  grabando_por_nombre = NULL
+            WHERE id = ?`,
+          [nuevoEstado, nuevoHistorialTexto, ventaId]
+        );
+      } else {
+        await conn.query(
+          `UPDATE ventas SET estado = ?, obs_validacion = ? WHERE id = ?`,
+          [nuevoEstado, nuevoHistorialTexto, ventaId]
+        );
+      }
     } else {
       await conn.query(
         `UPDATE ventas SET obs_validacion = ? WHERE id = ?`,
