@@ -13,6 +13,9 @@ const { validar, errorTexto, errorFecha, errorHora, errorHistorial, errorEnum } 
 const ROLES_BACK = ['backreclutamiento', 'jefatura', 'usuarios'];
 const ROLES_ALL  = ['backreclutamiento', 'jefatura', 'usuarios', 'asesorreclutamiento'];
 const ROLES_ENTREVISTAS = ['entrevistas', 'backreclutamiento', 'jefatura', 'usuarios'];
+const ROLES_CAPACITACION = ['capacitador', 'backreclutamiento', 'jefatura', 'usuarios'];
+const TIPIF_DIA_CAPACITACION = ['DESISTE', 'ASISTE', 'FALTA'];
+const TIPIF_FINAL_CAPACITACION = ['INGRESO', 'ALTA', 'DESISTE', 'DESAPROBADO'];
 const TURNOS_ENTREVISTA = ['TURNO 1', 'TURNO 2'];
 const TIPIFICACIONES_ENTREVISTA = ['NO CONTESTA', 'DESISTE', 'REPROGRAMA', 'CORTA LLAMADA', 'ASISTE', 'EN CAMINO', 'FALTA'];
 
@@ -56,21 +59,39 @@ function asegurarTablaEntrevistas() {
 let promesaTablaCapacitaciones;
 function asegurarTablaCapacitaciones() {
   if (!promesaTablaCapacitaciones) {
-    promesaTablaCapacitaciones = db.query(`
-      CREATE TABLE IF NOT EXISTS reclutamiento_capacitaciones (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        entrevista_id INT NULL,
-        lead_id INT NULL,
-        nombre_postulante VARCHAR(150) NOT NULL,
-        numero VARCHAR(30) NOT NULL,
-        fecha_inicio_capacitacion DATE NOT NULL,
-        creado_por_id INT NULL,
-        creado_por_nombre VARCHAR(150) NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_capacitaciones_lead (lead_id),
-        INDEX idx_capacitaciones_entrevista (entrevista_id)
-      )
-    `).catch(error => { promesaTablaCapacitaciones = null; throw error; });
+    promesaTablaCapacitaciones = (async () => {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS reclutamiento_capacitaciones (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          entrevista_id INT NULL,
+          lead_id INT NULL,
+          nombre_postulante VARCHAR(150) NOT NULL,
+          numero VARCHAR(30) NOT NULL,
+          fecha_inicio_capacitacion DATE NOT NULL,
+          creado_por_id INT NULL,
+          creado_por_nombre VARCHAR(150) NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_capacitaciones_lead (lead_id),
+          INDEX idx_capacitaciones_entrevista (entrevista_id)
+        )
+      `);
+      const [columnas] = await db.query('SHOW COLUMNS FROM reclutamiento_capacitaciones');
+      const existentes = new Set(columnas.map(c => c.Field));
+      // 5 días (2 de CAPA + 3 de OJT), cada uno con su propia tipificación
+      // DESISTE/ASISTE/FALTA; más SALA y tipificación final (desde OJT).
+      const nuevas = [
+        ['dia1_tipif', 'VARCHAR(20) NULL'],
+        ['dia2_tipif', 'VARCHAR(20) NULL'],
+        ['dia3_tipif', 'VARCHAR(20) NULL'],
+        ['dia4_tipif', 'VARCHAR(20) NULL'],
+        ['dia5_tipif', 'VARCHAR(20) NULL'],
+        ['sala', 'VARCHAR(60) NULL'],
+        ['tipificacion_final', 'VARCHAR(20) NULL'],
+      ];
+      for (const [columna, definicion] of nuevas) {
+        if (!existentes.has(columna)) await db.query(`ALTER TABLE reclutamiento_capacitaciones ADD COLUMN ${columna} ${definicion}`);
+      }
+    })().catch(error => { promesaTablaCapacitaciones = null; throw error; });
   }
   return promesaTablaCapacitaciones;
 }
@@ -486,11 +507,12 @@ router.post('/entrevistas/:entrevistaId/capacitacion', auth(ROLES_ENTREVISTAS), 
 });
 
 // GET /api/leads-reclutamiento/capacitaciones — listado para el apartado de Capacitación
-router.get('/capacitaciones', auth(ROLES_ENTREVISTAS), async (req, res) => {
+router.get('/capacitaciones', auth(ROLES_CAPACITACION), async (req, res) => {
   try {
     await asegurarTablaCapacitaciones();
     const [data] = await db.query(`
       SELECT c.id, c.nombre_postulante, c.numero, c.fecha_inicio_capacitacion, c.creado_por_nombre, c.created_at,
+             c.dia1_tipif, c.dia2_tipif, c.dia3_tipif, c.dia4_tipif, c.dia5_tipif, c.sala, c.tipificacion_final,
              l.campana
         FROM reclutamiento_capacitaciones c
         LEFT JOIN leads_reclutamiento l ON l.id = c.lead_id
@@ -503,25 +525,34 @@ router.get('/capacitaciones', auth(ROLES_ENTREVISTAS), async (req, res) => {
   }
 });
 
-// PATCH /api/leads-reclutamiento/capacitaciones/:capacitacionId — editar
-// nombre/número/fecha de inicio ya registrados.
-router.patch('/capacitaciones/:capacitacionId', auth(ROLES_ENTREVISTAS), async (req, res) => {
+// PATCH /api/leads-reclutamiento/capacitaciones/:capacitacionId — tipificar
+// los 5 días (CAPA/OJT), asignar sala y la tipificación final. Nombre, número
+// y fecha de inicio quedan fijos una vez registrados: no se editan aquí.
+router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async (req, res) => {
   try {
     await asegurarTablaCapacitaciones();
-    const { nombre_postulante, numero, fecha_inicio_capacitacion } = req.body;
+    const { dia1_tipif, dia2_tipif, dia3_tipif, dia4_tipif, dia5_tipif, sala, tipificacion_final } = req.body;
     const errores = validar([
-      errorTexto(nombre_postulante, 'nombre_postulante', { max: 150 }),
-      errorTexto(numero, 'numero', { max: 30 }),
-      errorFecha(fecha_inicio_capacitacion, 'fecha_inicio_capacitacion'),
+      errorEnum(dia1_tipif, 'dia1_tipif', TIPIF_DIA_CAPACITACION),
+      errorEnum(dia2_tipif, 'dia2_tipif', TIPIF_DIA_CAPACITACION),
+      errorEnum(dia3_tipif, 'dia3_tipif', TIPIF_DIA_CAPACITACION),
+      errorEnum(dia4_tipif, 'dia4_tipif', TIPIF_DIA_CAPACITACION),
+      errorEnum(dia5_tipif, 'dia5_tipif', TIPIF_DIA_CAPACITACION),
+      errorTexto(sala, 'sala', { max: 60 }),
+      errorEnum(tipificacion_final, 'tipificacion_final', TIPIF_FINAL_CAPACITACION),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
     const [rows] = await db.query(`SELECT id FROM reclutamiento_capacitaciones WHERE id = ?`, [req.params.capacitacionId]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Capacitación no encontrada' });
     const campos = [];
     const valores = [];
-    if (nombre_postulante !== undefined && nombre_postulante.trim()) { campos.push('nombre_postulante = ?'); valores.push(nombre_postulante.trim()); }
-    if (numero !== undefined && numero.trim()) { campos.push('numero = ?'); valores.push(numero.trim()); }
-    if (fecha_inicio_capacitacion !== undefined && fecha_inicio_capacitacion) { campos.push('fecha_inicio_capacitacion = ?'); valores.push(fecha_inicio_capacitacion); }
+    if (dia1_tipif !== undefined) { campos.push('dia1_tipif = ?'); valores.push(dia1_tipif || null); }
+    if (dia2_tipif !== undefined) { campos.push('dia2_tipif = ?'); valores.push(dia2_tipif || null); }
+    if (dia3_tipif !== undefined) { campos.push('dia3_tipif = ?'); valores.push(dia3_tipif || null); }
+    if (dia4_tipif !== undefined) { campos.push('dia4_tipif = ?'); valores.push(dia4_tipif || null); }
+    if (dia5_tipif !== undefined) { campos.push('dia5_tipif = ?'); valores.push(dia5_tipif || null); }
+    if (sala !== undefined) { campos.push('sala = ?'); valores.push((sala||'').trim() || null); }
+    if (tipificacion_final !== undefined) { campos.push('tipificacion_final = ?'); valores.push(tipificacion_final || null); }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
     valores.push(req.params.capacitacionId);
     await db.query(`UPDATE reclutamiento_capacitaciones SET ${campos.join(', ')} WHERE id = ?`, valores);
