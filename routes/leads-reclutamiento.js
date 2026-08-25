@@ -52,6 +52,29 @@ function asegurarTablaEntrevistas() {
   return promesaTablaEntrevistas;
 }
 
+// Apartado de Capacitación: se llena al tipificar una entrevista como ASISTE.
+let promesaTablaCapacitaciones;
+function asegurarTablaCapacitaciones() {
+  if (!promesaTablaCapacitaciones) {
+    promesaTablaCapacitaciones = db.query(`
+      CREATE TABLE IF NOT EXISTS reclutamiento_capacitaciones (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        entrevista_id INT NULL,
+        lead_id INT NULL,
+        nombre_postulante VARCHAR(150) NOT NULL,
+        numero VARCHAR(30) NOT NULL,
+        fecha_inicio_capacitacion DATE NOT NULL,
+        creado_por_id INT NULL,
+        creado_por_nombre VARCHAR(150) NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_capacitaciones_lead (lead_id),
+        INDEX idx_capacitaciones_entrevista (entrevista_id)
+      )
+    `).catch(error => { promesaTablaCapacitaciones = null; throw error; });
+  }
+  return promesaTablaCapacitaciones;
+}
+
 function normalizarN1(valor) {
   return String(valor || '').replace(/\D+/g, '');
 }
@@ -431,6 +454,81 @@ router.patch('/entrevistas/:entrevistaId', auth(ROLES_ENTREVISTAS), async (req, 
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar la entrevista' });
+  }
+});
+
+// POST /api/leads-reclutamiento/entrevistas/:entrevistaId/capacitacion — se
+// crea al tipificar la entrevista como ASISTE.
+router.post('/entrevistas/:entrevistaId/capacitacion', auth(ROLES_ENTREVISTAS), async (req, res) => {
+  try {
+    await asegurarTablaCapacitaciones();
+    const { nombre_postulante, numero, fecha_inicio_capacitacion } = req.body;
+    const errores = validar([
+      errorTexto(nombre_postulante, 'nombre_postulante', { requerido: true, max: 150 }),
+      errorTexto(numero, 'numero', { requerido: true, max: 30 }),
+      errorFecha(fecha_inicio_capacitacion, 'fecha_inicio_capacitacion'),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+    if (!fecha_inicio_capacitacion) return res.status(400).json({ ok: false, mensaje: 'fecha_inicio_capacitacion es obligatoria' });
+    const [rows] = await db.query(`SELECT id, lead_id FROM reclutamiento_entrevistas WHERE id = ?`, [req.params.entrevistaId]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Entrevista no encontrada' });
+    await db.query(`
+      INSERT INTO reclutamiento_capacitaciones
+        (entrevista_id, lead_id, nombre_postulante, numero, fecha_inicio_capacitacion, creado_por_id, creado_por_nombre)
+      VALUES (?,?,?,?,?,?,?)
+    `, [req.params.entrevistaId, rows[0].lead_id, nombre_postulante.trim(), numero.trim(), fecha_inicio_capacitacion,
+        req.user.id, req.user.nombre || req.user.usuario || 'Back Data']);
+    res.json({ ok: true, mensaje: 'Capacitación registrada' });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al registrar la capacitación' });
+  }
+});
+
+// GET /api/leads-reclutamiento/capacitaciones — listado para el apartado de Capacitación
+router.get('/capacitaciones', auth(ROLES_ENTREVISTAS), async (req, res) => {
+  try {
+    await asegurarTablaCapacitaciones();
+    const [data] = await db.query(`
+      SELECT c.id, c.nombre_postulante, c.numero, c.fecha_inicio_capacitacion, c.creado_por_nombre, c.created_at,
+             l.campana
+        FROM reclutamiento_capacitaciones c
+        LEFT JOIN leads_reclutamiento l ON l.id = c.lead_id
+       ORDER BY c.fecha_inicio_capacitacion DESC, c.id DESC
+    `);
+    res.json({ ok: true, data });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener capacitaciones' });
+  }
+});
+
+// PATCH /api/leads-reclutamiento/capacitaciones/:capacitacionId — editar
+// nombre/número/fecha de inicio ya registrados.
+router.patch('/capacitaciones/:capacitacionId', auth(ROLES_ENTREVISTAS), async (req, res) => {
+  try {
+    await asegurarTablaCapacitaciones();
+    const { nombre_postulante, numero, fecha_inicio_capacitacion } = req.body;
+    const errores = validar([
+      errorTexto(nombre_postulante, 'nombre_postulante', { max: 150 }),
+      errorTexto(numero, 'numero', { max: 30 }),
+      errorFecha(fecha_inicio_capacitacion, 'fecha_inicio_capacitacion'),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+    const [rows] = await db.query(`SELECT id FROM reclutamiento_capacitaciones WHERE id = ?`, [req.params.capacitacionId]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Capacitación no encontrada' });
+    const campos = [];
+    const valores = [];
+    if (nombre_postulante !== undefined && nombre_postulante.trim()) { campos.push('nombre_postulante = ?'); valores.push(nombre_postulante.trim()); }
+    if (numero !== undefined && numero.trim()) { campos.push('numero = ?'); valores.push(numero.trim()); }
+    if (fecha_inicio_capacitacion !== undefined && fecha_inicio_capacitacion) { campos.push('fecha_inicio_capacitacion = ?'); valores.push(fecha_inicio_capacitacion); }
+    if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
+    valores.push(req.params.capacitacionId);
+    await db.query(`UPDATE reclutamiento_capacitaciones SET ${campos.join(', ')} WHERE id = ?`, valores);
+    res.json({ ok: true, mensaje: 'Capacitación actualizada' });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al actualizar la capacitación' });
   }
 });
 
