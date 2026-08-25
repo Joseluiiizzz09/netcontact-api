@@ -56,6 +56,21 @@ function asegurarTablaEntrevistas() {
   return promesaTablaEntrevistas;
 }
 
+// ventas_reclutamiento ya existe (routes/ventas-reclutamiento.js); aquí solo
+// se asegura la columna nueva que usa el flujo de ALTA en Capacitación.
+let promesaColumnaFechaAlta;
+function asegurarColumnaFechaAltaVentas() {
+  if (!promesaColumnaFechaAlta) {
+    promesaColumnaFechaAlta = (async () => {
+      const [columnas] = await db.query('SHOW COLUMNS FROM ventas_reclutamiento');
+      if (!columnas.some(c => c.Field === 'fecha_alta')) {
+        await db.query(`ALTER TABLE ventas_reclutamiento ADD COLUMN fecha_alta DATE NULL`);
+      }
+    })().catch(error => { promesaColumnaFechaAlta = null; throw error; });
+  }
+  return promesaColumnaFechaAlta;
+}
+
 // Apartado de Capacitación: se llena al tipificar una entrevista como ASISTE.
 let promesaTablaCapacitaciones;
 function asegurarTablaCapacitaciones() {
@@ -91,6 +106,7 @@ function asegurarTablaCapacitaciones() {
         ['fecha_inicio_capacitador', 'DATE NULL'],
         ['historial', 'TEXT NULL'],
         ['ventas_reclutamiento_id', 'INT NULL'],
+        ['fecha_alta', 'DATE NULL'],
       ];
       for (const [columna, definicion] of nuevas) {
         if (!existentes.has(columna)) await db.query(`ALTER TABLE reclutamiento_capacitaciones ADD COLUMN ${columna} ${definicion}`);
@@ -516,7 +532,7 @@ router.get('/capacitaciones', auth(ROLES_CAPACITACION), async (req, res) => {
     await asegurarTablaCapacitaciones();
     const [data] = await db.query(`
       SELECT c.id, c.nombre_postulante, c.numero, c.fecha_inicio_capacitacion, c.fecha_inicio_capacitador,
-             c.creado_por_nombre, c.created_at, c.historial,
+             c.creado_por_nombre, c.created_at, c.historial, c.fecha_alta,
              c.dia1_tipif, c.dia2_tipif, c.dia3_tipif, c.dia4_tipif, c.dia5_tipif, c.sala, c.tipificacion_final,
              l.campana
         FROM reclutamiento_capacitaciones c
@@ -539,7 +555,7 @@ router.get('/capacitaciones', auth(ROLES_CAPACITACION), async (req, res) => {
 router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async (req, res) => {
   try {
     await asegurarTablaCapacitaciones();
-    const { dia1_tipif, dia2_tipif, dia3_tipif, dia4_tipif, dia5_tipif, sala, tipificacion_final, fecha_inicio_capacitador } = req.body;
+    const { dia1_tipif, dia2_tipif, dia3_tipif, dia4_tipif, dia5_tipif, sala, tipificacion_final, fecha_inicio_capacitador, fecha_alta } = req.body;
     const errores = validar([
       errorEnum(dia1_tipif, 'dia1_tipif', TIPIF_DIA_CAPACITACION),
       errorEnum(dia2_tipif, 'dia2_tipif', TIPIF_DIA_CAPACITACION),
@@ -549,12 +565,17 @@ router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async 
       errorEnum(sala, 'sala', SALAS_CAPACITACION),
       errorEnum(tipificacion_final, 'tipificacion_final', TIPIF_FINAL_CAPACITACION),
       errorFecha(fecha_inicio_capacitador, 'fecha_inicio_capacitador'),
+      errorFecha(fecha_alta, 'fecha_alta'),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
     const [rows] = await db.query(`SELECT * FROM reclutamiento_capacitaciones WHERE id = ?`, [req.params.capacitacionId]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Capacitación no encontrada' });
     const actual = rows[0];
-    const cambios = { dia1_tipif, dia2_tipif, dia3_tipif, dia4_tipif, dia5_tipif, sala, tipificacion_final, fecha_inicio_capacitador };
+    // La fecha de alta es obligatoria justo cuando se pasa a ALTA por primera vez.
+    if (tipificacion_final === 'ALTA' && actual.tipificacion_final !== 'ALTA' && !fecha_alta) {
+      return res.status(400).json({ ok: false, mensaje: 'Ingresa la fecha de alta' });
+    }
+    const cambios = { dia1_tipif, dia2_tipif, dia3_tipif, dia4_tipif, dia5_tipif, sala, tipificacion_final, fecha_inicio_capacitador, fecha_alta };
     const campos = [];
     const valores = [];
     let historial = [];
@@ -596,12 +617,13 @@ router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async 
         // en vez de reventar el INSERT completo.
         const [usuarioRows] = await db.query(`SELECT id FROM usuarios WHERE id = ?`, [req.user.id]);
         const usuarioIdValido = usuarioRows.length ? req.user.id : null;
+        await asegurarColumnaFechaAltaVentas();
         const [insVentas] = await db.query(`
           INSERT INTO ventas_reclutamiento
             (nombre, tipo_doc, dni, telefono1, telefono2, distrito, puesto, campana, empresa,
-             experiencia, disponibilidad, estado_reclutamiento, usuario_id)
-          VALUES (?, 'DNI', NULL, ?, '', '', '', ?, '', '', '', 'RECLUTADO', ?)
-        `, [actual.nombre_postulante, actual.numero, campanaLead, usuarioIdValido]);
+             experiencia, disponibilidad, estado_reclutamiento, usuario_id, fecha_alta)
+          VALUES (?, 'DNI', NULL, ?, '', '', '', ?, '', '', '', 'RECLUTADO', ?, ?)
+        `, [actual.nombre_postulante, actual.numero, campanaLead, usuarioIdValido, fecha_alta || null]);
         await db.query(`UPDATE reclutamiento_capacitaciones SET ventas_reclutamiento_id = ? WHERE id = ?`, [insVentas.insertId, req.params.capacitacionId]);
       } catch (errAlta) {
         console.error('[CAPACITACION] No se pudo crear en Reclutados:', errAlta.message);
