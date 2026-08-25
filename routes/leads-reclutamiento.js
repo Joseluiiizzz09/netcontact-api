@@ -55,6 +55,20 @@ function normalizarUsuarioWhatsapp(valor) {
   return String(valor || '').trim().replace(/^@+/, '').substring(0, 100);
 }
 
+// Deja constancia en el historial de cada tipificación (mismo patrón que
+// registrarTipifEvent en routes/leads.js), para que el historial de
+// asignaciones quede relacionado con las tipificaciones que se fueron
+// registrando mientras cada asesor tuvo el número asignado.
+function registrarTipifEvent(historial, asesor, tipif) {
+  const eventos = historial.filter(h => h?.tipo === 'TIPIF_VEND');
+  const ultimo = eventos[eventos.length - 1];
+  if (ultimo && (ultimo.asesor || '') === (asesor || '') && (ultimo.tipif || '') === (tipif || '')) {
+    return historial;
+  }
+  historial.push({ tipo:'TIPIF_VEND', asesor: asesor || '', tipif: tipif || '', ts: Date.now(), hora: horaPeruAhora(), fecha: fechaPeruHoy() });
+  return historial;
+}
+
 function fechaPeruHoy() {
   const ahora = new Date();
   const peru  = new Date(ahora.getTime() + ahora.getTimezoneOffset()*60000 + (-5*60*60000));
@@ -238,12 +252,15 @@ router.patch('/:id/tipif', auth(ROLES_ALL), async (req, res) => {
     const { tipif_vend } = req.body;
     if (tipif_vend && String(tipif_vend).length > 200)
       return res.status(400).json({ ok: false, mensaje: 'tipif_vend no puede superar 200 caracteres' });
-    const [rows] = await db.query(`SELECT id, asesor_id FROM leads_reclutamiento WHERE id = ?`, [req.params.id]);
+    const [rows] = await db.query(`SELECT id, asesor_id, asesor_nombre, historial FROM leads_reclutamiento WHERE id = ?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Candidato no encontrado' });
     if (req.user.cargo === 'asesorreclutamiento' && rows[0].asesor_id !== req.user.id)
       return res.status(403).json({ ok: false, mensaje: 'No puedes tipificar candidatos de otros asesores' });
-    await db.query(`UPDATE leads_reclutamiento SET tipif_vend=?, tipif_hora=? WHERE id=?`, [tipif_vend||'', horaPeruAhora(), req.params.id]);
-    res.json({ ok: true, mensaje: 'Tipificación guardada' });
+    let historial = [];
+    try { historial = JSON.parse(rows[0].historial || '[]'); } catch { historial = []; }
+    registrarTipifEvent(historial, rows[0].asesor_nombre || '', String(tipif_vend||'').trim().toUpperCase());
+    await db.query(`UPDATE leads_reclutamiento SET tipif_vend=?, tipif_hora=?, historial=? WHERE id=?`, [tipif_vend||'', horaPeruAhora(), JSON.stringify(historial), req.params.id]);
+    res.json({ ok: true, mensaje: 'Tipificación guardada', historial });
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al guardar tipificación' });
