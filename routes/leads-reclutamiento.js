@@ -14,27 +14,35 @@ const ROLES_BACK = ['backreclutamiento', 'jefatura', 'usuarios'];
 const ROLES_ALL  = ['backreclutamiento', 'jefatura', 'usuarios', 'asesorreclutamiento'];
 const ROLES_ENTREVISTAS = ['entrevistas', 'backreclutamiento', 'jefatura', 'usuarios'];
 const TURNOS_ENTREVISTA = ['TURNO 1', 'TURNO 2'];
+const TIPIFICACIONES_ENTREVISTA = ['NO CONTESTA', 'DESISTE', 'REPROGRAMA', 'CORTA LLAMADA', 'ASISTE', 'EN CAMINO', 'FALTA'];
 
 let promesaTablaEntrevistas;
 function asegurarTablaEntrevistas() {
   if (!promesaTablaEntrevistas) {
-    promesaTablaEntrevistas = db.query(`
-      CREATE TABLE IF NOT EXISTS reclutamiento_entrevistas (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        lead_id INT NOT NULL,
-        nombre_postulante VARCHAR(150) NOT NULL,
-        numero VARCHAR(30) NOT NULL,
-        numero_ref VARCHAR(30) NULL,
-        turno VARCHAR(20) NOT NULL,
-        fecha_agendamiento DATE NOT NULL,
-        observacion VARCHAR(2000) NULL,
-        creado_por_id INT NULL,
-        creado_por_nombre VARCHAR(150) NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_entrevistas_lead (lead_id),
-        INDEX idx_entrevistas_fecha (fecha_agendamiento)
-      )
-    `).catch(error => { promesaTablaEntrevistas = null; throw error; });
+    promesaTablaEntrevistas = (async () => {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS reclutamiento_entrevistas (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          lead_id INT NOT NULL,
+          nombre_postulante VARCHAR(150) NOT NULL,
+          numero VARCHAR(30) NOT NULL,
+          numero_ref VARCHAR(30) NULL,
+          turno VARCHAR(20) NOT NULL,
+          fecha_agendamiento DATE NOT NULL,
+          observacion VARCHAR(2000) NULL,
+          creado_por_id INT NULL,
+          creado_por_nombre VARCHAR(150) NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_entrevistas_lead (lead_id),
+          INDEX idx_entrevistas_fecha (fecha_agendamiento)
+        )
+      `);
+      const [columnas] = await db.query('SHOW COLUMNS FROM reclutamiento_entrevistas');
+      const existentes = new Set(columnas.map(c => c.Field));
+      if (!existentes.has('tipificacion')) {
+        await db.query(`ALTER TABLE reclutamiento_entrevistas ADD COLUMN tipificacion VARCHAR(30) NULL`);
+      }
+    })().catch(error => { promesaTablaEntrevistas = null; throw error; });
   }
   return promesaTablaEntrevistas;
 }
@@ -345,7 +353,7 @@ router.get('/entrevistas', auth(ROLES_ENTREVISTAS), async (req, res) => {
     await asegurarTablaEntrevistas();
     const [data] = await db.query(`
       SELECT e.id, e.nombre_postulante, e.numero, e.numero_ref, e.turno, e.fecha_agendamiento,
-             e.observacion, e.creado_por_nombre, e.created_at,
+             e.observacion, e.tipificacion, e.creado_por_nombre, e.created_at,
              l.campana, l.n1 AS lead_n1, l.n2 AS lead_n2
         FROM reclutamiento_entrevistas e
         JOIN leads_reclutamiento l ON l.id = e.lead_id
@@ -355,6 +363,33 @@ router.get('/entrevistas', auth(ROLES_ENTREVISTAS), async (req, res) => {
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener entrevistas' });
+  }
+});
+
+// PATCH /api/leads-reclutamiento/entrevistas/:entrevistaId — tipificar el
+// resultado de la entrevista y/o actualizar la observación.
+router.patch('/entrevistas/:entrevistaId', auth(ROLES_ENTREVISTAS), async (req, res) => {
+  try {
+    await asegurarTablaEntrevistas();
+    const { tipificacion, observacion } = req.body;
+    const errores = validar([
+      errorEnum(tipificacion, 'tipificacion', TIPIFICACIONES_ENTREVISTA),
+      errorTexto(observacion, 'observacion', { max: 2000 }),
+    ]);
+    if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
+    const [rows] = await db.query(`SELECT id FROM reclutamiento_entrevistas WHERE id = ?`, [req.params.entrevistaId]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Entrevista no encontrada' });
+    const campos = [];
+    const valores = [];
+    if (tipificacion !== undefined) { campos.push('tipificacion = ?'); valores.push(tipificacion || null); }
+    if (observacion !== undefined) { campos.push('observacion = ?'); valores.push((observacion||'').trim() || null); }
+    if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
+    valores.push(req.params.entrevistaId);
+    await db.query(`UPDATE reclutamiento_entrevistas SET ${campos.join(', ')} WHERE id = ?`, valores);
+    res.json({ ok: true, mensaje: 'Entrevista actualizada' });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al actualizar la entrevista' });
   }
 });
 
