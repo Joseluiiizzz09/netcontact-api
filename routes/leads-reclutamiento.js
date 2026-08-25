@@ -210,9 +210,15 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
 
     const fechaHoy  = fechaPeruHoy();
     const horaAhora = horaPeruAhora();
-    let creados = 0;
+    const esLote = items.length > 1;
+    let creados = 0, omitidos = 0;
     const ids = [];
+    const erroresDetalle = [];
 
+    // En un solo alta (no lote), un dato invalido sigue rechazando toda la
+    // peticion tal cual antes. En un lote (import masivo/legacy), una fila
+    // invalida u con error de base de datos ya NO debe tumbar el resto —
+    // se omite esa fila y se sigue con las demas, reportando el conteo real.
     for (const l of items) {
       const n1Normalizado = normalizarN1(l.n1);
       const usuarioWhatsapp = normalizarUsuarioWhatsapp(l.usuario_whatsapp);
@@ -223,18 +229,15 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
         errorTexto(l.tipif_back, 'tipif_back', { max: 100 }),
         errorTexto(l.obs_asesor, 'obs_asesor', { max: 2000 }),
       ]);
-      if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
-      if (!n1Normalizado && !usuarioWhatsapp) {
-        return res.status(400).json({ ok: false, mensaje: 'Ingresa un N1 o un usuario de WhatsApp' });
+      const sinContacto = !n1Normalizado && !usuarioWhatsapp;
+      if (errores || sinContacto) {
+        const mensajeError = errores ? errores[0] : 'Ingresa un N1 o un usuario de WhatsApp';
+        if (!esLote) return res.status(400).json({ ok: false, mensaje: mensajeError });
+        omitidos++; erroresDetalle.push(mensajeError);
+        continue;
       }
-    }
 
-    for (const l of items) {
-      const n1Normalizado = normalizarN1(l.n1);
-      const usuarioWhatsapp = normalizarUsuarioWhatsapp(l.usuario_whatsapp);
-      if (!n1Normalizado && !usuarioWhatsapp) continue;
       const fechaLead = l.fecha || fechaHoy;
-
       let asesorId = null;
       let asesorNombre = '';
       const nombreBuscar = l.asesor_nombre || l.asesor;
@@ -255,21 +258,31 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
             ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaHoy, motivo: 'Asignacion inicial' }])
             : '[]');
 
-      const [result] = await db.query(`
-        INSERT INTO leads_reclutamiento
-          (campana, departamento, provincia, distrito, n1, n2, usuario_whatsapp, tipif_back, obs_asesor, asesor_id, asesor_nombre,
-           fecha, hora_asig, sin_asignar, historial, usuario_back_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `, [
-        l.campana||'', l.departamento||'', l.provincia||'', l.distrito||'', l.n1||null, l.n2||null, usuarioWhatsapp||null,
-        l.tipif_back||null, l.obs_asesor||null,
-        asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, req.user.id,
-      ]);
-      ids.push(result.insertId);
-      creados++;
+      try {
+        const [result] = await db.query(`
+          INSERT INTO leads_reclutamiento
+            (campana, departamento, provincia, distrito, n1, n2, usuario_whatsapp, tipif_back, obs_asesor, asesor_id, asesor_nombre,
+             fecha, hora_asig, sin_asignar, historial, usuario_back_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `, [
+          l.campana||'', l.departamento||'', l.provincia||'', l.distrito||'', n1Normalizado||null, l.n2||null, usuarioWhatsapp||null,
+          l.tipif_back||null, l.obs_asesor||null,
+          asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, req.user.id,
+        ]);
+        ids.push(result.insertId);
+        creados++;
+      } catch (errFila) {
+        if (!esLote) throw errFila;
+        console.error('[LEADS-RECLUTAMIENTO] Fila de lote omitida por error:', errFila.message);
+        omitidos++; erroresDetalle.push(errFila.message);
+      }
     }
 
-    res.json({ ok: true, creados, ids, mensaje: `${creados} candidato(s) creado(s)` });
+    res.json({
+      ok: true, creados, omitidos, ids,
+      mensaje: omitidos ? `${creados} candidato(s) creado(s), ${omitidos} omitido(s)` : `${creados} candidato(s) creado(s)`,
+      erroresDetalle: erroresDetalle.slice(0, 20),
+    });
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al crear candidatos' });
