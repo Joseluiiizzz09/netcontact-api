@@ -15,7 +15,7 @@ const ROLES_ALL  = ['backreclutamiento', 'jefatura', 'usuarios', 'asesorreclutam
 const ROLES_ENTREVISTAS = ['entrevistas', 'backreclutamiento', 'jefatura', 'usuarios'];
 const ROLES_CAPACITACION = ['capacitador', 'backreclutamiento', 'jefatura', 'usuarios'];
 const TIPIF_DIA_CAPACITACION = ['DESISTE', 'ASISTE', 'FALTA'];
-const TIPIF_FINAL_CAPACITACION = ['INGRESO', 'ALTA', 'DESISTE', 'DESAPROBADO'];
+const TIPIF_FINAL_CAPACITACION = ['ALTA', 'DESISTE', 'DESAPROBADO'];
 const SALAS_CAPACITACION = ['SALA 1','SALA 2','SALA 3','SALA 4','SALA CHANCAY','SALA 5','SALA 6'];
 const TURNOS_ENTREVISTA = ['TURNO 1', 'TURNO 2'];
 const TIPIFICACIONES_ENTREVISTA = ['NO CONTESTA', 'DESISTE', 'REPROGRAMA', 'CORTA LLAMADA', 'ASISTE', 'EN CAMINO', 'FALTA'];
@@ -89,6 +89,8 @@ function asegurarTablaCapacitaciones() {
         ['sala', 'VARCHAR(60) NULL'],
         ['tipificacion_final', 'VARCHAR(20) NULL'],
         ['fecha_inicio_capacitador', 'DATE NULL'],
+        ['historial', 'TEXT NULL'],
+        ['ventas_reclutamiento_id', 'INT NULL'],
       ];
       for (const [columna, definicion] of nuevas) {
         if (!existentes.has(columna)) await db.query(`ALTER TABLE reclutamiento_capacitaciones ADD COLUMN ${columna} ${definicion}`);
@@ -514,14 +516,17 @@ router.get('/capacitaciones', auth(ROLES_CAPACITACION), async (req, res) => {
     await asegurarTablaCapacitaciones();
     const [data] = await db.query(`
       SELECT c.id, c.nombre_postulante, c.numero, c.fecha_inicio_capacitacion, c.fecha_inicio_capacitador,
-             c.creado_por_nombre, c.created_at,
+             c.creado_por_nombre, c.created_at, c.historial,
              c.dia1_tipif, c.dia2_tipif, c.dia3_tipif, c.dia4_tipif, c.dia5_tipif, c.sala, c.tipificacion_final,
              l.campana
         FROM reclutamiento_capacitaciones c
         LEFT JOIN leads_reclutamiento l ON l.id = c.lead_id
        ORDER BY c.fecha_inicio_capacitacion DESC, c.id DESC
     `);
-    res.json({ ok: true, data });
+    res.json({ ok: true, data: data.map(c => ({
+      ...c,
+      historial: (() => { try { return JSON.parse(c.historial || '[]'); } catch { return []; } })(),
+    })) });
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al obtener capacitaciones' });
@@ -546,22 +551,53 @@ router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async 
       errorFecha(fecha_inicio_capacitador, 'fecha_inicio_capacitador'),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
-    const [rows] = await db.query(`SELECT id FROM reclutamiento_capacitaciones WHERE id = ?`, [req.params.capacitacionId]);
+    const [rows] = await db.query(`SELECT * FROM reclutamiento_capacitaciones WHERE id = ?`, [req.params.capacitacionId]);
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Capacitación no encontrada' });
+    const actual = rows[0];
+    const cambios = { dia1_tipif, dia2_tipif, dia3_tipif, dia4_tipif, dia5_tipif, sala, tipificacion_final, fecha_inicio_capacitador };
     const campos = [];
     const valores = [];
-    if (dia1_tipif !== undefined) { campos.push('dia1_tipif = ?'); valores.push(dia1_tipif || null); }
-    if (dia2_tipif !== undefined) { campos.push('dia2_tipif = ?'); valores.push(dia2_tipif || null); }
-    if (dia3_tipif !== undefined) { campos.push('dia3_tipif = ?'); valores.push(dia3_tipif || null); }
-    if (dia4_tipif !== undefined) { campos.push('dia4_tipif = ?'); valores.push(dia4_tipif || null); }
-    if (dia5_tipif !== undefined) { campos.push('dia5_tipif = ?'); valores.push(dia5_tipif || null); }
-    if (sala !== undefined) { campos.push('sala = ?'); valores.push(sala || null); }
-    if (tipificacion_final !== undefined) { campos.push('tipificacion_final = ?'); valores.push(tipificacion_final || null); }
-    if (fecha_inicio_capacitador !== undefined) { campos.push('fecha_inicio_capacitador = ?'); valores.push(fecha_inicio_capacitador || null); }
+    let historial = [];
+    try { historial = JSON.parse(actual.historial || '[]'); } catch { historial = []; }
+    for (const campo of Object.keys(cambios)) {
+      const nuevo = cambios[campo];
+      if (nuevo === undefined) continue;
+      const valorNuevo = nuevo || null;
+      const valorAnterior = actual[campo] instanceof Date
+        ? actual[campo].toISOString().slice(0, 10)
+        : (actual[campo] || null);
+      campos.push(`${campo} = ?`); valores.push(valorNuevo);
+      if (String(valorAnterior || '') !== String(valorNuevo || '')) {
+        historial.push({
+          campo, valor_anterior: valorAnterior || '', valor_nuevo: valorNuevo || '',
+          usuario_id: req.user.id, usuario_nombre: req.user.nombre || req.user.usuario || 'Usuario',
+          hora: horaPeruAhora(), fecha: fechaPeruHoy(),
+        });
+      }
+    }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
+    campos.push('historial = ?'); valores.push(JSON.stringify(historial));
     valores.push(req.params.capacitacionId);
     await db.query(`UPDATE reclutamiento_capacitaciones SET ${campos.join(', ')} WHERE id = ?`, valores);
-    res.json({ ok: true, mensaje: 'Capacitación actualizada' });
+
+    // Al marcar la tipificación final como ALTA, el postulante pasa a
+    // Reclutados (ventas_reclutamiento) — una sola vez por capacitación.
+    if (tipificacion_final === 'ALTA' && actual.tipificacion_final !== 'ALTA' && !actual.ventas_reclutamiento_id) {
+      let campanaLead = '';
+      if (actual.lead_id) {
+        const [leadRows] = await db.query(`SELECT campana FROM leads_reclutamiento WHERE id = ?`, [actual.lead_id]);
+        campanaLead = leadRows[0]?.campana || '';
+      }
+      const [insVentas] = await db.query(`
+        INSERT INTO ventas_reclutamiento
+          (nombre, tipo_doc, dni, telefono1, telefono2, distrito, puesto, campana, empresa,
+           experiencia, disponibilidad, estado_reclutamiento, usuario_id)
+        VALUES (?, 'DNI', NULL, ?, '', '', '', ?, '', '', '', 'RECLUTADO', ?)
+      `, [actual.nombre_postulante, actual.numero, campanaLead, req.user.id]);
+      await db.query(`UPDATE reclutamiento_capacitaciones SET ventas_reclutamiento_id = ? WHERE id = ?`, [insVentas.insertId, req.params.capacitacionId]);
+    }
+
+    res.json({ ok: true, mensaje: 'Capacitación actualizada', historial });
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, mensaje: 'Error al actualizar la capacitación' });
