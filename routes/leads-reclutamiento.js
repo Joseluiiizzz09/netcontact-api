@@ -42,6 +42,11 @@ function asegurarTablaEntrevistas() {
       if (!existentes.has('tipificacion')) {
         await db.query(`ALTER TABLE reclutamiento_entrevistas ADD COLUMN tipificacion VARCHAR(30) NULL`);
       }
+      // Fecha real en la que el postulante se acerca (distinta de fecha_agendamiento,
+      // que es la fecha solicitada en el formulario original).
+      if (!existentes.has('fecha_entrevista')) {
+        await db.query(`ALTER TABLE reclutamiento_entrevistas ADD COLUMN fecha_entrevista DATE NULL`);
+      }
     })().catch(error => { promesaTablaEntrevistas = null; throw error; });
   }
   return promesaTablaEntrevistas;
@@ -386,7 +391,7 @@ router.get('/entrevistas', auth(ROLES_ENTREVISTAS), async (req, res) => {
     // entrevista ya agendada debe seguir apareciendo en este listado (solo se
     // pierde el dato de campaña/N1/N2 del lead, no el registro de la entrevista).
     const [data] = await db.query(`
-      SELECT e.id, e.nombre_postulante, e.numero, e.numero_ref, e.turno, e.fecha_agendamiento,
+      SELECT e.id, e.nombre_postulante, e.numero, e.numero_ref, e.turno, e.fecha_agendamiento, e.fecha_entrevista,
              e.observacion, e.tipificacion, e.creado_por_nombre, e.created_at,
              l.campana, l.n1 AS lead_n1, l.n2 AS lead_n2
         FROM reclutamiento_entrevistas e
@@ -405,10 +410,11 @@ router.get('/entrevistas', auth(ROLES_ENTREVISTAS), async (req, res) => {
 router.patch('/entrevistas/:entrevistaId', auth(ROLES_ENTREVISTAS), async (req, res) => {
   try {
     await asegurarTablaEntrevistas();
-    const { tipificacion, observacion } = req.body;
+    const { tipificacion, observacion, fecha_entrevista } = req.body;
     const errores = validar([
       errorEnum(tipificacion, 'tipificacion', TIPIFICACIONES_ENTREVISTA),
       errorTexto(observacion, 'observacion', { max: 2000 }),
+      errorFecha(fecha_entrevista, 'fecha_entrevista'),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
     const [rows] = await db.query(`SELECT id FROM reclutamiento_entrevistas WHERE id = ?`, [req.params.entrevistaId]);
@@ -417,6 +423,7 @@ router.patch('/entrevistas/:entrevistaId', auth(ROLES_ENTREVISTAS), async (req, 
     const valores = [];
     if (tipificacion !== undefined) { campos.push('tipificacion = ?'); valores.push(tipificacion || null); }
     if (observacion !== undefined) { campos.push('observacion = ?'); valores.push((observacion||'').trim() || null); }
+    if (fecha_entrevista !== undefined) { campos.push('fecha_entrevista = ?'); valores.push(fecha_entrevista || null); }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
     valores.push(req.params.entrevistaId);
     await db.query(`UPDATE reclutamiento_entrevistas SET ${campos.join(', ')} WHERE id = ?`, valores);
