@@ -227,6 +227,8 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
         errorTexto(l.n1, 'n1', { max: 30 }),
         errorTexto(usuarioWhatsapp, 'usuario_whatsapp', { max: 100 }),
         errorTexto(l.tipif_back, 'tipif_back', { max: 100 }),
+        errorTexto(l.tipif_vend, 'tipif_vend', { max: 200 }),
+        errorHora(l.tipif_hora, 'tipif_hora'),
         errorTexto(l.obs_asesor, 'obs_asesor', { max: 2000 }),
       ]);
       const sinContacto = !n1Normalizado && !usuarioWhatsapp;
@@ -240,11 +242,22 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
       const fechaLead = l.fecha || fechaHoy;
       let asesorId = null;
       let asesorNombre = '';
-      const nombreBuscar = l.asesor_nombre || l.asesor;
+      const aliasesLegacy = {
+        ALONDRA: 'ALONDRA VALERIA SANTIBAÑEZ SANABRIA',
+        ADRIANA: 'ADRIANA GIRON',
+        ARELIS: 'ARELIS IBAÑEZ',
+      };
+      const nombreOriginal = String(l.asesor_nombre || l.asesor || '').trim();
+      const nombreBuscar = l.importacion_legacy
+        ? (aliasesLegacy[nombreOriginal.toUpperCase()] || nombreOriginal)
+        : nombreOriginal;
       if (nombreBuscar) {
         const [uRows] = await db.query(`SELECT id, nombre, cargo, permisos, activo FROM usuarios WHERE nombre = ?`, [nombreBuscar]);
         if (uRows.length && await esAsesorReclutamientoValido(uRows[0].id)) {
           asesorId = uRows[0].id; asesorNombre = uRows[0].nombre;
+        } else if (l.importacion_legacy) {
+          // Conserva el responsable histórico aunque ya no tenga una cuenta activa.
+          asesorNombre = nombreBuscar;
         }
       }
 
@@ -261,12 +274,12 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
       try {
         const [result] = await db.query(`
           INSERT INTO leads_reclutamiento
-            (campana, departamento, provincia, distrito, n1, n2, usuario_whatsapp, tipif_back, obs_asesor, asesor_id, asesor_nombre,
-             fecha, hora_asig, sin_asignar, historial, usuario_back_id)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            (campana, departamento, provincia, distrito, n1, n2, usuario_whatsapp, tipif_back, tipif_vend, tipif_hora,
+             obs_asesor, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, usuario_back_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `, [
           l.campana||'', l.departamento||'', l.provincia||'', l.distrito||'', n1Normalizado||null, l.n2||null, usuarioWhatsapp||null,
-          l.tipif_back||null, l.obs_asesor||null,
+          l.tipif_back||null, l.tipif_vend||null, l.tipif_hora||null, l.obs_asesor||null,
           asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, req.user.id,
         ]);
         ids.push(result.insertId);
