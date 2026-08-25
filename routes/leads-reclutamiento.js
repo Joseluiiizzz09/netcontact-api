@@ -16,6 +16,7 @@ const ROLES_ENTREVISTAS = ['entrevistas', 'backreclutamiento', 'jefatura', 'usua
 const ROLES_CAPACITACION = ['capacitador', 'backreclutamiento', 'jefatura', 'usuarios'];
 const TIPIF_DIA_CAPACITACION = ['DESISTE', 'ASISTE', 'FALTA'];
 const TIPIF_FINAL_CAPACITACION = ['INGRESO', 'ALTA', 'DESISTE', 'DESAPROBADO'];
+const SALAS_CAPACITACION = ['SALA 1','SALA 2','SALA 3','SALA 4','SALA CHANCAY','SALA 5','SALA 6'];
 const TURNOS_ENTREVISTA = ['TURNO 1', 'TURNO 2'];
 const TIPIFICACIONES_ENTREVISTA = ['NO CONTESTA', 'DESISTE', 'REPROGRAMA', 'CORTA LLAMADA', 'ASISTE', 'EN CAMINO', 'FALTA'];
 
@@ -87,6 +88,7 @@ function asegurarTablaCapacitaciones() {
         ['dia5_tipif', 'VARCHAR(20) NULL'],
         ['sala', 'VARCHAR(60) NULL'],
         ['tipificacion_final', 'VARCHAR(20) NULL'],
+        ['fecha_inicio_capacitador', 'DATE NULL'],
       ];
       for (const [columna, definicion] of nuevas) {
         if (!existentes.has(columna)) await db.query(`ALTER TABLE reclutamiento_capacitaciones ADD COLUMN ${columna} ${definicion}`);
@@ -511,7 +513,8 @@ router.get('/capacitaciones', auth(ROLES_CAPACITACION), async (req, res) => {
   try {
     await asegurarTablaCapacitaciones();
     const [data] = await db.query(`
-      SELECT c.id, c.nombre_postulante, c.numero, c.fecha_inicio_capacitacion, c.creado_por_nombre, c.created_at,
+      SELECT c.id, c.nombre_postulante, c.numero, c.fecha_inicio_capacitacion, c.fecha_inicio_capacitador,
+             c.creado_por_nombre, c.created_at,
              c.dia1_tipif, c.dia2_tipif, c.dia3_tipif, c.dia4_tipif, c.dia5_tipif, c.sala, c.tipificacion_final,
              l.campana
         FROM reclutamiento_capacitaciones c
@@ -531,15 +534,16 @@ router.get('/capacitaciones', auth(ROLES_CAPACITACION), async (req, res) => {
 router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async (req, res) => {
   try {
     await asegurarTablaCapacitaciones();
-    const { dia1_tipif, dia2_tipif, dia3_tipif, dia4_tipif, dia5_tipif, sala, tipificacion_final } = req.body;
+    const { dia1_tipif, dia2_tipif, dia3_tipif, dia4_tipif, dia5_tipif, sala, tipificacion_final, fecha_inicio_capacitador } = req.body;
     const errores = validar([
       errorEnum(dia1_tipif, 'dia1_tipif', TIPIF_DIA_CAPACITACION),
       errorEnum(dia2_tipif, 'dia2_tipif', TIPIF_DIA_CAPACITACION),
       errorEnum(dia3_tipif, 'dia3_tipif', TIPIF_DIA_CAPACITACION),
       errorEnum(dia4_tipif, 'dia4_tipif', TIPIF_DIA_CAPACITACION),
       errorEnum(dia5_tipif, 'dia5_tipif', TIPIF_DIA_CAPACITACION),
-      errorTexto(sala, 'sala', { max: 60 }),
+      errorEnum(sala, 'sala', SALAS_CAPACITACION),
       errorEnum(tipificacion_final, 'tipificacion_final', TIPIF_FINAL_CAPACITACION),
+      errorFecha(fecha_inicio_capacitador, 'fecha_inicio_capacitador'),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
     const [rows] = await db.query(`SELECT id FROM reclutamiento_capacitaciones WHERE id = ?`, [req.params.capacitacionId]);
@@ -551,8 +555,9 @@ router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async 
     if (dia3_tipif !== undefined) { campos.push('dia3_tipif = ?'); valores.push(dia3_tipif || null); }
     if (dia4_tipif !== undefined) { campos.push('dia4_tipif = ?'); valores.push(dia4_tipif || null); }
     if (dia5_tipif !== undefined) { campos.push('dia5_tipif = ?'); valores.push(dia5_tipif || null); }
-    if (sala !== undefined) { campos.push('sala = ?'); valores.push((sala||'').trim() || null); }
+    if (sala !== undefined) { campos.push('sala = ?'); valores.push(sala || null); }
     if (tipificacion_final !== undefined) { campos.push('tipificacion_final = ?'); valores.push(tipificacion_final || null); }
+    if (fecha_inicio_capacitador !== undefined) { campos.push('fecha_inicio_capacitador = ?'); valores.push(fecha_inicio_capacitador || null); }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
     valores.push(req.params.capacitacionId);
     await db.query(`UPDATE reclutamiento_capacitaciones SET ${campos.join(', ')} WHERE id = ?`, valores);
