@@ -83,7 +83,21 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const errGet = validar([errorFecha(fecha, 'fecha')]);
     if (errGet) return res.status(400).json({ ok: false, mensaje: errGet[0] });
 
-    let sql = `SELECT l.*, ub.nombre AS creado_por_nombre FROM leads_reclutamiento l LEFT JOIN usuarios ub ON ub.id = l.usuario_back_id WHERE 1=1`;
+    await asegurarTablaEntrevistas();
+    // Última tipificación de entrevista por lead — señal para permitir la
+    // rotación manual aunque el tipif_vend siga en "Acepta propuesta"
+    // (postulante que no continuó y vuelve a escribir).
+    let sql = `
+      SELECT l.*, ub.nombre AS creado_por_nombre, ent.tipificacion AS entrevista_tipificacion
+        FROM leads_reclutamiento l
+        LEFT JOIN usuarios ub ON ub.id = l.usuario_back_id
+        LEFT JOIN (
+          SELECT e1.lead_id, e1.tipificacion
+            FROM reclutamiento_entrevistas e1
+            INNER JOIN (SELECT lead_id, MAX(id) AS max_id FROM reclutamiento_entrevistas GROUP BY lead_id) u
+              ON u.lead_id = e1.lead_id AND u.max_id = e1.id
+        ) ent ON ent.lead_id = l.id
+       WHERE 1=1`;
     const params = [];
 
     if (req.user.cargo === 'asesorreclutamiento') {
