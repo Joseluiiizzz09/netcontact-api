@@ -582,19 +582,30 @@ router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async 
 
     // Al marcar la tipificación final como ALTA, el postulante pasa a
     // Reclutados (ventas_reclutamiento) — una sola vez por capacitación.
+    // Efecto secundario "best effort": si falla, no debe tumbar el guardado
+    // de la tipificación (que ya se aplicó arriba).
     if (tipificacion_final === 'ALTA' && actual.tipificacion_final !== 'ALTA' && !actual.ventas_reclutamiento_id) {
-      let campanaLead = '';
-      if (actual.lead_id) {
-        const [leadRows] = await db.query(`SELECT campana FROM leads_reclutamiento WHERE id = ?`, [actual.lead_id]);
-        campanaLead = leadRows[0]?.campana || '';
+      try {
+        let campanaLead = '';
+        if (actual.lead_id) {
+          const [leadRows] = await db.query(`SELECT campana FROM leads_reclutamiento WHERE id = ?`, [actual.lead_id]);
+          campanaLead = leadRows[0]?.campana || '';
+        }
+        // usuario_id tiene FK a usuarios: si req.user.id no es un usuario real
+        // (ej. un actor sintético de una vista delegada), se guarda sin dueño
+        // en vez de reventar el INSERT completo.
+        const [usuarioRows] = await db.query(`SELECT id FROM usuarios WHERE id = ?`, [req.user.id]);
+        const usuarioIdValido = usuarioRows.length ? req.user.id : null;
+        const [insVentas] = await db.query(`
+          INSERT INTO ventas_reclutamiento
+            (nombre, tipo_doc, dni, telefono1, telefono2, distrito, puesto, campana, empresa,
+             experiencia, disponibilidad, estado_reclutamiento, usuario_id)
+          VALUES (?, 'DNI', NULL, ?, '', '', '', ?, '', '', '', 'RECLUTADO', ?)
+        `, [actual.nombre_postulante, actual.numero, campanaLead, usuarioIdValido]);
+        await db.query(`UPDATE reclutamiento_capacitaciones SET ventas_reclutamiento_id = ? WHERE id = ?`, [insVentas.insertId, req.params.capacitacionId]);
+      } catch (errAlta) {
+        console.error('[CAPACITACION] No se pudo crear en Reclutados:', errAlta.message);
       }
-      const [insVentas] = await db.query(`
-        INSERT INTO ventas_reclutamiento
-          (nombre, tipo_doc, dni, telefono1, telefono2, distrito, puesto, campana, empresa,
-           experiencia, disponibilidad, estado_reclutamiento, usuario_id)
-        VALUES (?, 'DNI', NULL, ?, '', '', '', ?, '', '', '', 'RECLUTADO', ?)
-      `, [actual.nombre_postulante, actual.numero, campanaLead, req.user.id]);
-      await db.query(`UPDATE reclutamiento_capacitaciones SET ventas_reclutamiento_id = ? WHERE id = ?`, [insVentas.insertId, req.params.capacitacionId]);
     }
 
     res.json({ ok: true, mensaje: 'Capacitación actualizada', historial });
