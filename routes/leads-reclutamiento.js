@@ -290,14 +290,13 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
         const [result] = await db.query(`
           INSERT INTO leads_reclutamiento
             (campana, departamento, provincia, distrito, n1, n2, usuario_whatsapp, tipif_back, tipif_vend, tipif_hora,
-             obs_asesor, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, usuario_back_id)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             obs_asesor, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones, usuario_back_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `, [
           l.campana||'', l.departamento||'', l.provincia||'', l.distrito||'', n1Normalizado||null, l.n2||null, usuarioWhatsapp||null,
           l.tipif_back||null, l.tipif_vend||null, l.tipif_hora||null, l.obs_asesor||null,
-          asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, req.user.id,
-        ]);
-        ids.push(result.insertId);
+          asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, Math.max(0, parseInt(l.rotaciones, 10) || 0), req.user.id,
+        ]);        ids.push(result.insertId);
         creados++;
       } catch (errFila) {
         if (!esLote) throw errFila;
