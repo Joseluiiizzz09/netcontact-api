@@ -159,6 +159,25 @@ async function esAsesorReclutamientoValido(usuarioId) {
   catch { return false; }
 }
 
+// El Excel del Sistema Antiguo solo trae el primer nombre del asesor (ej.
+// "ALONDRA"), nunca el nombre completo guardado en usuarios.nombre. Antes se
+// resolvia contra una lista fija de 3 nombres a mano, que quedaba desactualizada
+// cada vez que se sumaba un asesor nuevo (paso con NICOLE: quedaba como
+// "responsable historico sin cuenta" aunque su cuenta seguia activa). Ahora se
+// busca dinamicamente por la primera palabra del nombre completo, entre los
+// asesores de reclutamiento activos.
+async function resolverAsesorReclutamientoPorNombreCorto(nombreCorto) {
+  const texto = String(nombreCorto || '').trim();
+  if (!texto) return null;
+  const [rows] = await db.query(`
+    SELECT id, nombre FROM usuarios
+    WHERE activo = 1
+      AND (cargo = 'asesorreclutamiento' OR JSON_CONTAINS(COALESCE(permisos, '[]'), '"asesorreclutamiento"'))
+      AND UPPER(SUBSTRING_INDEX(TRIM(nombre), ' ', 1)) = UPPER(?)
+    ORDER BY id ASC
+  `, [texto]);
+  return rows.length ? rows[0] : null;
+}
 // GET /api/leads-reclutamiento
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
@@ -242,25 +261,19 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
       const fechaLead = l.fecha || fechaHoy;
       let asesorId = null;
       let asesorNombre = '';
-      const aliasesLegacy = {
-        ALONDRA: 'ALONDRA VALERIA SANTIBAÑEZ SANABRIA',
-        ADRIANA: 'ADRIANA GIRON',
-        ARELIS: 'ARELIS IBAÑEZ',
-      };
       const nombreOriginal = String(l.asesor_nombre || l.asesor || '').trim();
-      const nombreBuscar = l.importacion_legacy
-        ? (aliasesLegacy[nombreOriginal.toUpperCase()] || nombreOriginal)
-        : nombreOriginal;
-      if (nombreBuscar) {
-        const [uRows] = await db.query(`SELECT id, nombre, cargo, permisos, activo FROM usuarios WHERE nombre = ?`, [nombreBuscar]);
-        if (uRows.length && await esAsesorReclutamientoValido(uRows[0].id)) {
-          asesorId = uRows[0].id; asesorNombre = uRows[0].nombre;
-        } else if (l.importacion_legacy) {
-          // Conserva el responsable histórico aunque ya no tenga una cuenta activa.
-          asesorNombre = nombreBuscar;
+      if (nombreOriginal) {
+        if (l.importacion_legacy) {
+          const encontrado = await resolverAsesorReclutamientoPorNombreCorto(nombreOriginal);
+          if (encontrado) { asesorId = encontrado.id; asesorNombre = encontrado.nombre; }
+          else asesorNombre = nombreOriginal; // se conserva el nombre historico sin cuenta activa
+        } else {
+          const [uRows] = await db.query(`SELECT id, nombre FROM usuarios WHERE nombre = ?`, [nombreOriginal]);
+          if (uRows.length && await esAsesorReclutamientoValido(uRows[0].id)) {
+            asesorId = uRows[0].id; asesorNombre = uRows[0].nombre;
+          }
         }
       }
-
       // hora_asig/historial: si vienen explicitos (ej. importacion Legacy con
       // fecha/hora reales del sistema anterior) se respetan tal cual, en vez de
       // sobreescribirlos con la hora actual como hacia el alta normal.
