@@ -162,23 +162,25 @@ async function esAsesorReclutamientoValido(usuarioId) {
 // El Excel del Sistema Antiguo solo trae el primer nombre del asesor (ej.
 // "ALONDRA"), nunca el nombre completo guardado en usuarios.nombre. Antes se
 // resolvia contra una lista fija de 3 nombres a mano, que quedaba desactualizada
-// cada vez que se sumaba un asesor nuevo (paso con NICOLE: quedaba como
-// "responsable historico sin cuenta" aunque su cuenta seguia activa). Ahora se
-// busca dinamicamente por la primera palabra del nombre completo, entre los
-// asesores de reclutamiento activos.
+// cada vez que se sumaba un asesor nuevo. Esto es solo para atribuir el
+// responsable HISTORICO del import — a proposito NO usa esAsesorReclutamientoValido
+// (esa funcion exige el permiso 'asesorreclutamiento', que tambien controla si el
+// usuario ve el area 'Asesor de Reclutamiento' en el switcher de Cambiar area;
+// usarla aqui obligaria a dar ese permiso solo para que el import reconozca el
+// nombre, y eso le abriria una segunda area a personal que solo es de back office).
+// Basta con que sea alguien activo del equipo de reclutamiento.
 async function resolverAsesorReclutamientoPorNombreCorto(nombreCorto) {
   const texto = String(nombreCorto || '').trim();
   if (!texto) return null;
   const [rows] = await db.query(`
     SELECT id, nombre FROM usuarios
     WHERE activo = 1
-      AND (cargo = 'asesorreclutamiento' OR JSON_CONTAINS(COALESCE(permisos, '[]'), '"asesorreclutamiento"'))
+      AND cargo IN ('backreclutamiento', 'asesorreclutamiento')
       AND UPPER(SUBSTRING_INDEX(TRIM(nombre), ' ', 1)) = UPPER(?)
     ORDER BY id ASC
   `, [texto]);
   return rows.length ? rows[0] : null;
-}
-// GET /api/leads-reclutamiento
+}// GET /api/leads-reclutamiento
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
     const { fecha, asesor_id } = req.query;
