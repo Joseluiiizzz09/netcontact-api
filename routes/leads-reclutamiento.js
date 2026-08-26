@@ -672,4 +672,61 @@ router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async 
   }
 });
 
+// GET /api/leads-reclutamiento/marketing-resumen
+// Espejo de /api/leads/marketing-resumen (Backoffice comercial) pero sobre
+// leads_reclutamiento — mismo reporte para Marketing, ahora tambien para
+// las campañas de reclutamiento.
+router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
+  try {
+    const desde = String(req.query.desde || '').trim();
+    const hasta = String(req.query.hasta || '').trim();
+    const campana = String(req.query.campana || '').trim();
+    const tipificacion = String(req.query.tipificacion || '').trim();
+    const errores = validar([
+      errorFecha(desde || undefined, 'desde'),
+      errorFecha(hasta || undefined, 'hasta'),
+      errorTexto(campana, 'campana', { max:100 }),
+      errorTexto(tipificacion, 'tipificacion', { max:100 }),
+    ]);
+    if (errores) return res.status(400).json({ ok:false, mensaje:errores[0] });
+    if (desde && hasta && desde > hasta)
+      return res.status(400).json({ ok:false, mensaje:'La fecha Desde no puede ser posterior a Hasta' });
+
+    const campanaSql = `COALESCE(NULLIF(TRIM(l.campana),''), 'SIN CAMPAÑA')`;
+    const tipifSql = `COALESCE(NULLIF(TRIM(l.tipif_vend),''), NULLIF(TRIM(l.tipif_back),''), 'SIN TIPIFICAR')`;
+    const condiciones = [];
+    const params = [];
+    if (desde) { condiciones.push('l.fecha >= ?'); params.push(desde); }
+    if (hasta) { condiciones.push('l.fecha <= ?'); params.push(hasta); }
+    if (campana) { condiciones.push(`${campanaSql} = ?`); params.push(campana); }
+    if (tipificacion) { condiciones.push(`${tipifSql} = ?`); params.push(tipificacion); }
+    const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
+
+    const [filas] = await db.query(`
+      SELECT ${campanaSql} AS campana,
+             ${tipifSql} AS tipificacion,
+             COUNT(*) AS cantidad,
+             MIN(l.created_at) AS primera_alta,
+             MAX(l.created_at) AS ultima_alta
+      FROM leads_reclutamiento l
+      ${where}
+      GROUP BY ${campanaSql}, ${tipifSql}
+      ORDER BY cantidad DESC, campana ASC, tipificacion ASC
+    `, params);
+    const [campanas] = await db.query(`SELECT DISTINCT ${campanaSql} campana FROM leads_reclutamiento l ORDER BY campana`);
+    const [tipificaciones] = await db.query(`SELECT DISTINCT ${tipifSql} tipificacion FROM leads_reclutamiento l ORDER BY tipificacion`);
+    res.json({
+      ok:true,
+      data:filas.map(f => ({ ...f, cantidad:Number(f.cantidad || 0) })),
+      filtros:{
+        campanas:campanas.map(f => f.campana),
+        tipificaciones:tipificaciones.map(f => f.tipificacion),
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, mensaje:'Error al generar el dashboard de Marketing de Reclutamiento' });
+  }
+});
+
 module.exports = router;
