@@ -149,26 +149,21 @@ function horaPeruAhora() {
   return String(peru.getHours()).padStart(2,'0')+':'+String(peru.getMinutes()).padStart(2,'0');
 }
 
-// Verifica que el usuario destino realmente tenga el cargo asesorreclutamiento
-// (principal o delegado vía permisos) antes de dejarlo recibir asignaciones.
+// No existe un rol separado "asesor de reclutamiento": el mismo personal de
+// Back Data Reclutamiento (cargo backreclutamiento) es quien llama a los
+// candidatos. Basta con que el usuario destino este activo y sea de ese cargo
+// para poder recibir asignaciones.
 async function esAsesorReclutamientoValido(usuarioId) {
-  const [rows] = await db.query(`SELECT cargo, permisos, activo FROM usuarios WHERE id = ?`, [usuarioId]);
+  const [rows] = await db.query(`SELECT cargo, activo FROM usuarios WHERE id = ?`, [usuarioId]);
   if (!rows.length || !rows[0].activo) return false;
-  if (rows[0].cargo === 'asesorreclutamiento') return true;
-  try { return (JSON.parse(rows[0].permisos || '[]')).includes('asesorreclutamiento'); }
-  catch { return false; }
+  return rows[0].cargo === 'backreclutamiento';
 }
 
 // El Excel del Sistema Antiguo solo trae el primer nombre del asesor (ej.
 // "ALONDRA"), nunca el nombre completo guardado en usuarios.nombre. Antes se
 // resolvia contra una lista fija de 3 nombres a mano, que quedaba desactualizada
 // cada vez que se sumaba un asesor nuevo. Esto es solo para atribuir el
-// responsable HISTORICO del import — a proposito NO usa esAsesorReclutamientoValido
-// (esa funcion exige el permiso 'asesorreclutamiento', que tambien controla si el
-// usuario ve el area 'Asesor de Reclutamiento' en el switcher de Cambiar area;
-// usarla aqui obligaria a dar ese permiso solo para que el import reconozca el
-// nombre, y eso le abriria una segunda area a personal que solo es de back office).
-// Basta con que sea alguien activo del equipo de reclutamiento.
+// responsable HISTORICO del import.
 async function resolverAsesorReclutamientoPorNombreCorto(nombreCorto) {
   const texto = String(nombreCorto || '').trim();
   if (!texto) return null;
