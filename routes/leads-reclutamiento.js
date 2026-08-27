@@ -509,12 +509,13 @@ router.get('/entrevistas', auth(ROLES_ENTREVISTAS), async (req, res) => {
 router.patch('/entrevistas/:entrevistaId', auth(ROLES_ENTREVISTAS), async (req, res) => {
   try {
     await asegurarTablaEntrevistas();
-    const { tipificacion, observacion, fecha_entrevista, fecha_agendamiento } = req.body;
+    const { tipificacion, observacion, fecha_entrevista, fecha_agendamiento, turno } = req.body;
     const errores = validar([
       errorEnum(tipificacion, 'tipificacion', TIPIFICACIONES_ENTREVISTA),
       errorTexto(observacion, 'observacion', { max: 2000 }),
       errorFecha(fecha_entrevista, 'fecha_entrevista'),
       errorFecha(fecha_agendamiento, 'fecha_agendamiento'),
+      errorEnum(turno, 'turno', TURNOS_ENTREVISTA),
     ]);
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
     const [rows] = await db.query(`SELECT id FROM reclutamiento_entrevistas WHERE id = ?`, [req.params.entrevistaId]);
@@ -525,6 +526,7 @@ router.patch('/entrevistas/:entrevistaId', auth(ROLES_ENTREVISTAS), async (req, 
     if (observacion !== undefined) { campos.push('observacion = ?'); valores.push((observacion||'').trim() || null); }
     if (fecha_entrevista !== undefined) { campos.push('fecha_entrevista = ?'); valores.push(fecha_entrevista || null); }
     if (fecha_agendamiento !== undefined) { campos.push('fecha_agendamiento = ?'); valores.push(fecha_agendamiento || null); }
+    if (turno !== undefined) { campos.push('turno = ?'); valores.push(turno || null); }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar' });
     valores.push(req.params.entrevistaId);
     await db.query(`UPDATE reclutamiento_entrevistas SET ${campos.join(', ')} WHERE id = ?`, valores);
