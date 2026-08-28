@@ -695,7 +695,26 @@ router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
       return res.status(400).json({ ok:false, mensaje:'La fecha Desde no puede ser posterior a Hasta' });
 
     const campanaSql = `COALESCE(NULLIF(TRIM(CASE WHEN UPPER(TRIM(l.campana)) IN ('—K9','–K9','-K9') THEN 'K9' WHEN UPPER(TRIM(l.campana)) LIKE 'CAMP %' THEN SUBSTRING(TRIM(l.campana), 6) ELSE TRIM(l.campana) END),''), 'SIN CAMPAÑA')`;
-    const tipifSql = `COALESCE(NULLIF(TRIM(l.tipif_vend),''), NULLIF(TRIM(l.tipif_back_2),''), NULLIF(TRIM(l.tipif_back),''), 'SIN TIPIFICAR')`;
+    // leads.tipif_vend se congela en 'VENTA CERRADA' al momento de la venta y
+    // JAMÁS se actualiza después — el estado real (INSTALADO, CAIDA) vive en
+    // ventas.estado, ajeno a leads. Sin este JOIN, Marketing ve todo lo
+    // instalado o caído como si siguiera "recién vendido". Se toma la venta
+    // más reciente por lead_id (puede haber más de una: caída + reventa).
+    const ventaJoinSql = `
+      LEFT JOIN (
+        SELECT v1.lead_id, v1.estado
+        FROM ventas v1
+        INNER JOIN (
+          SELECT lead_id, MAX(id) AS max_id FROM ventas WHERE lead_id IS NOT NULL GROUP BY lead_id
+        ) vm ON vm.lead_id = v1.lead_id AND vm.max_id = v1.id
+      ) v ON v.lead_id = l.id
+    `;
+    const tipifSql = `CASE
+        WHEN v.estado = 'INSTALADO' THEN 'INSTALADO'
+        WHEN v.estado = 'CAIDA' THEN 'VENTA CAIDA'
+        WHEN v.lead_id IS NOT NULL THEN 'VENTA CERRADA'
+        ELSE COALESCE(NULLIF(TRIM(l.tipif_vend),''), NULLIF(TRIM(l.tipif_back_2),''), NULLIF(TRIM(l.tipif_back),''), 'SIN TIPIFICAR')
+      END`;
     const condiciones = [];
     const params = [];
     // Por `fecha` (día de trabajo real), no por created_at (cuándo se cargó en
@@ -715,12 +734,13 @@ router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
              MIN(l.created_at) AS primera_alta,
              MAX(l.created_at) AS ultima_alta
       FROM leads l
+      ${ventaJoinSql}
       ${where}
       GROUP BY ${campanaSql}, ${tipifSql}
       ORDER BY cantidad DESC, campana ASC, tipificacion ASC
     `, params);
     const [campanas] = await db.query(`SELECT DISTINCT ${campanaSql} campana FROM leads l ORDER BY campana`);
-    const [tipificaciones] = await db.query(`SELECT DISTINCT ${tipifSql} tipificacion FROM leads l ORDER BY tipificacion`);
+    const [tipificaciones] = await db.query(`SELECT DISTINCT ${tipifSql} tipificacion FROM leads l ${ventaJoinSql} ORDER BY tipificacion`);
     res.json({
       ok:true,
       data:filas.map(f => ({ ...f, cantidad:Number(f.cantidad || 0) })),
