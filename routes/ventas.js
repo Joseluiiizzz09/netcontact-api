@@ -1119,6 +1119,38 @@ router.get('/calidad-rendimiento', auth(['supcalidad','jefatura']), async (req, 
   }
 });
 
+// Ranking de Grabaciones para Jefatura: cuántas ventas grabó cada persona de
+// Grabaciones hoy/semana/mes. Se basa en venta_historial (campo='estado_grab',
+// valor_nuevo='grabado'), que ya registra usuario_id/usuario_nombre al
+// momento exacto del cambio — más confiable que leer el grabando_por_id
+// actual de la venta, que puede haber sido reasignado después.
+router.get('/grabaciones-rendimiento', auth(['jefatura']), async (req, res) => {
+  try {
+    const [ranking] = await db.query(`
+      SELECT usuario_id AS id, usuario_nombre AS nombre,
+             SUM(CASE WHEN DATE(creado) = DATE(CONVERT_TZ(NOW(), @@session.time_zone, '-05:00')) THEN 1 ELSE 0 END) AS hoy,
+             SUM(CASE WHEN YEARWEEK(creado, 3) = YEARWEEK(CONVERT_TZ(NOW(), @@session.time_zone, '-05:00'), 3) THEN 1 ELSE 0 END) AS semana,
+             SUM(CASE WHEN DATE_FORMAT(creado, '%Y-%m') = DATE_FORMAT(CONVERT_TZ(NOW(), @@session.time_zone, '-05:00'), '%Y-%m') THEN 1 ELSE 0 END) AS mes
+        FROM (
+          SELECT usuario_id, usuario_nombre, CONVERT_TZ(created_at, @@session.time_zone, '-05:00') AS creado
+            FROM venta_historial
+           WHERE campo = 'estado_grab' AND LOWER(valor_nuevo) = 'grabado'
+             AND created_at >= DATE_SUB(NOW(), INTERVAL 40 DAY)
+        ) t
+       GROUP BY usuario_id, usuario_nombre
+      HAVING mes > 0
+       ORDER BY hoy DESC, semana DESC, mes DESC, nombre ASC
+    `);
+    res.json({
+      ok: true,
+      ranking: ranking.map(f => ({ id: f.id, nombre: f.nombre, hoy: Number(f.hoy || 0), semana: Number(f.semana || 0), mes: Number(f.mes || 0) })),
+    });
+  } catch (e) {
+    console.error('[GET /ventas/grabaciones-rendimiento]', e.message || e);
+    res.status(500).json({ ok: false, mensaje: 'Error al obtener el rendimiento de Grabaciones' });
+  }
+});
+
 // Listado ligero exclusivo de Validación. Evita las subconsultas operativas de
 // Programación, Seguimiento, WhatsApp y Grabaciones que esta pantalla no usa.
 router.get('/validacion-listado', auth(['validacion','jefatura']), async (req, res) => {
