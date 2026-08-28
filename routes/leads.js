@@ -234,6 +234,27 @@ async function existeTipificadoOtraCampana(conn, n1, fecha, campana, excluirId =
   return rows.some(r => resumenTipificadoDia(r, r.historial, fecha).aplica);
 }
 
+// Mismo N1 + misma fecha + MISMA campaña: es un duplicado de carga (error
+// del Back). Un N1 repetido en otra campaña el mismo día no cuenta aquí —
+// eso es un lead independiente y válido (ver idLeadMasAntiguoDelDia, que sí
+// compara entre campañas para la regla operativa de NO ROTAR).
+async function existeLeadMismoDiaMismaCampana(conn, n1, fecha, campana, excluirId = null) {
+  const numero = normalizarN1(n1);
+  if (!numero || !fecha) return null;
+  const params = [numero, fecha, normalizarCampana(campana) || '—'];
+  let excluirSql = '';
+  if (excluirId) { excluirSql = ' AND id <> ?'; params.push(excluirId); }
+  const [rows] = await conn.query(`
+    SELECT id FROM leads
+    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+      AND fecha = ?
+      AND campana = ?
+      ${excluirSql}
+    LIMIT 1
+  `, params);
+  return rows[0]?.id || null;
+}
+
 async function idLeadMasAntiguoDelDia(conn, n1, fecha) {
   const numero = normalizarN1(n1);
   if (!numero || !fecha) return null;
@@ -921,8 +942,10 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     const fechaHoy  = fechaPeruHoy();
     const horaAhora = horaPeruAhora();
     let creados = 0;
+    let omitidos = 0;
     const ids = [];
     const fechasUsadas = [];
+    const omitidosN1 = [];
 
     // Validar todas las fechas antes de insertar para evitar lotes parciales.
     for (const l of leads) {
@@ -948,6 +971,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const fechaLead = l.fecha || fechaHoy;
       const n1Normalizado = normalizarN1(l.n1);
       const usuarioWhatsapp = normalizarUsuarioWhatsapp(l.usuario_whatsapp);
+      const campanaNormalizada = normalizarCampana(l.campana);
 
       // El alta individual solicita esta comprobacion. La carga masiva conserva
       // su flujo de vista previa y su opcion explicita de incluir duplicados.
@@ -969,6 +993,16 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         }
       }
 
+      // Mismo N1 + misma fecha + misma campaña ya cargado: se omite en
+      // silencio, sin crear una fila nueva. Un N1 repetido en OTRA campaña
+      // el mismo día no entra aquí — sigue siendo un lead independiente y
+      // válido, que cuenta aparte en las métricas de esa campaña.
+      if (n1Normalizado && await existeLeadMismoDiaMismaCampana(db, n1Normalizado, fechaLead, campanaNormalizada)) {
+        omitidos++;
+        omitidosN1.push(n1Normalizado);
+        continue;
+      }
+
       let asesorId = l.asesor_id || null;
       let asesorNombre = '';
 
@@ -985,7 +1019,6 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
 
       const horaFinal  = asesorId ? horaAhora : '';
       const tipifBackInicial = normalizarTipifBack(l.tipif_back);
-      const campanaNormalizada = normalizarCampana(l.campana);
       const bloquearRotacion = Boolean(await idLeadMasAntiguoDelDia(db, n1Normalizado, fechaLead));
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
       const nombreCargador = await nombreUsuario(req.user.id);
@@ -1017,8 +1050,10 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     res.json({
       ok: true,
       creados,
+      omitidos,
+      omitidos_n1: omitidosN1,
       ids,
-      mensaje: `${creados} lead(s) creado(s)`,
+      mensaje: `${creados} lead(s) creado(s)${omitidos ? `, ${omitidos} omitido(s) por ya existir en la misma campaña ese día` : ''}`,
       fecha_usada: fechasUsadas[0] || fechaHoy,
       fechas_usadas: [...new Set(fechasUsadas)],
     });
