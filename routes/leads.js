@@ -695,26 +695,6 @@ router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
       return res.status(400).json({ ok:false, mensaje:'La fecha Desde no puede ser posterior a Hasta' });
 
     const campanaSql = `COALESCE(NULLIF(TRIM(CASE WHEN UPPER(TRIM(l.campana)) IN ('—K9','–K9','-K9') THEN 'K9' WHEN UPPER(TRIM(l.campana)) LIKE 'CAMP %' THEN SUBSTRING(TRIM(l.campana), 6) ELSE TRIM(l.campana) END),''), 'SIN CAMPAÑA')`;
-    // leads.tipif_vend se congela en 'VENTA CERRADA' al momento de la venta y
-    // JAMÁS se actualiza después — el estado real (INSTALADO, CAIDA) vive en
-    // ventas.estado, ajeno a leads. Sin este JOIN, Marketing ve todo lo
-    // instalado o caído como si siguiera "recién vendido". Se toma la venta
-    // más reciente por lead_id (puede haber más de una: caída + reventa).
-    const ventaJoinSql = `
-      LEFT JOIN (
-        SELECT v1.lead_id, v1.estado
-        FROM ventas v1
-        INNER JOIN (
-          SELECT lead_id, MAX(id) AS max_id FROM ventas WHERE lead_id IS NOT NULL GROUP BY lead_id
-        ) vm ON vm.lead_id = v1.lead_id AND vm.max_id = v1.id
-      ) v ON v.lead_id = l.id
-    `;
-    const tipifSql = `CASE
-        WHEN v.estado = 'INSTALADO' THEN 'INSTALADO'
-        WHEN v.estado = 'CAIDA' THEN 'VENTA CAIDA'
-        WHEN v.lead_id IS NOT NULL THEN 'VENTA CERRADA'
-        ELSE COALESCE(NULLIF(TRIM(l.tipif_vend),''), NULLIF(TRIM(l.tipif_back_2),''), NULLIF(TRIM(l.tipif_back),''), 'SIN TIPIFICAR')
-      END`;
     const condiciones = [];
     const params = [];
     // Por `fecha` (día de trabajo real), no por created_at (cuándo se cargó en
@@ -724,29 +704,84 @@ router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
     if (desde) { condiciones.push('l.fecha >= ?'); params.push(desde); }
     if (hasta) { condiciones.push('l.fecha <= ?'); params.push(hasta); }
     if (campana) { condiciones.push(`${campanaSql} = ?`); params.push(normalizarCampana(campana) || campana); }
-    if (tipificacion) { condiciones.push(`${tipifSql} = ?`); params.push(tipificacion); }
     const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
 
-    const [filas] = await db.query(`
-      SELECT ${campanaSql} AS campana,
-             ${tipifSql} AS tipificacion,
-             COUNT(*) AS cantidad,
-             MIN(l.created_at) AS primera_alta,
-             MAX(l.created_at) AS ultima_alta
+    const [leadsRows] = await db.query(`
+      SELECT l.n1, ${campanaSql} AS campana, l.tipif_vend, l.tipif_back_2, l.tipif_back, l.created_at
       FROM leads l
-      ${ventaJoinSql}
       ${where}
-      GROUP BY ${campanaSql}, ${tipifSql}
-      ORDER BY cantidad DESC, campana ASC, tipificacion ASC
     `, params);
-    const [campanas] = await db.query(`SELECT DISTINCT ${campanaSql} campana FROM leads l ORDER BY campana`);
-    const [tipificaciones] = await db.query(`SELECT DISTINCT ${tipifSql} tipificacion FROM leads l ${ventaJoinSql} ORDER BY tipificacion`);
+
+    // leads.tipif_vend se congela en 'VENTA CERRADA' al cerrar la venta y JAMÁS
+    // se actualiza después — el estado real (INSTALADO, CAIDA, y sus variantes
+    // como REASIGNACION/RECHAZO_MESA/SERVICIO_ACTIVO) vive en `ventas`, ajeno
+    // a `leads`. En vez de reinventar ese mapeo en SQL (fácil de dejar casos
+    // afuera), se reutiliza tipificacionInternaVenta() — la misma función que
+    // ya usa GET /leads para la columna/filtro "INSTALADO" de Backoffice —
+    // junto con el mismo criterio de esa vista: la venta más reciente por
+    // TELÉFONO (no por lead_id — un mismo número puede repetirse en varias
+    // filas/campañas y todas comparten el estado real de esa venta).
+    let ventaMap = new Map();
+    if (leadsRows.length) {
+      const phones = [...new Set(leadsRows.map(l => (l.n1 || '').trim()).filter(Boolean))];
+      if (phones.length) {
+        const placeholders = phones.map(() => '?').join(',');
+        const [ventas] = await db.query(
+          `SELECT v.id, v.telefono1, v.estado, v.estado_grab, v.motivo_seguimiento, v.created_at AS venta_created_at
+             FROM ventas v
+            WHERE v.telefono1 IN (${placeholders})
+              AND v.id = (SELECT MAX(v2.id) FROM ventas v2 WHERE v2.telefono1 = v.telefono1)`,
+          phones
+        );
+        if (ventas.length) {
+          const ventaIds = ventas.map(v => v.id);
+          const idsSql = ventaIds.map(() => '?').join(',');
+          const [eventos] = await db.query(
+            `SELECT venta_id,
+                    SUBSTRING_INDEX(GROUP_CONCAT(CASE WHEN campo='estado' AND tipo='CAMBIO_VALIDACION' THEN valor_nuevo END ORDER BY id DESC SEPARATOR '|||'), '|||', 1) AS estado_validacion,
+                    MAX(CASE WHEN campo='estado' AND tipo='CAMBIO_VALIDACION' THEN created_at END) AS fecha_validacion,
+                    MAX(CASE WHEN campo='estado_grab' THEN created_at END) AS fecha_grabacion,
+                    MAX(CASE WHEN modulo='Seguimiento' AND campo IN ('estado','motivo_seguimiento','tramo_seguimiento') THEN created_at END) AS fecha_seguimiento
+               FROM venta_historial
+              WHERE venta_id IN (${idsSql}) GROUP BY venta_id`,
+            ventaIds
+          );
+          const eventosMap = new Map(eventos.map(e => [Number(e.venta_id), e]));
+          for (const venta of ventas) Object.assign(venta, eventosMap.get(Number(venta.id)) || {});
+        }
+        for (const vv of ventas) ventaMap.set((vv.telefono1 || '').trim(), vv);
+      }
+    }
+
+    const resumenMap = new Map();
+    const campanasSet = new Set();
+    const tipificacionesSet = new Set(['INSTALADO', 'VENTA CAIDA']);
+    for (const l of leadsRows) {
+      const ventaInfo = ventaMap.get((l.n1 || '').trim());
+      const tipifInterna = tipificacionInternaVenta(ventaInfo);
+      const tipificacionFila = tipifInterna?.tipificacion
+        || [l.tipif_vend, l.tipif_back_2, l.tipif_back].map(v => String(v || '').trim()).find(Boolean)
+        || 'SIN TIPIFICAR';
+      campanasSet.add(l.campana);
+      tipificacionesSet.add(tipificacionFila);
+      if (tipificacion && tipificacionFila !== tipificacion) continue;
+      const clave = `${l.campana}|||${tipificacionFila}`;
+      const actual = resumenMap.get(clave) || { campana: l.campana, tipificacion: tipificacionFila, cantidad: 0, primera_alta: l.created_at, ultima_alta: l.created_at };
+      actual.cantidad++;
+      if (String(l.created_at) < String(actual.primera_alta)) actual.primera_alta = l.created_at;
+      if (String(l.created_at) > String(actual.ultima_alta)) actual.ultima_alta = l.created_at;
+      resumenMap.set(clave, actual);
+    }
+    const filas = [...resumenMap.values()].sort((a, b) =>
+      b.cantidad - a.cantidad || a.campana.localeCompare(b.campana) || a.tipificacion.localeCompare(b.tipificacion));
+
+    const [campanasTodas] = await db.query(`SELECT DISTINCT ${campanaSql} campana FROM leads l ORDER BY campana`);
     res.json({
       ok:true,
-      data:filas.map(f => ({ ...f, cantidad:Number(f.cantidad || 0) })),
+      data:filas,
       filtros:{
-        campanas:campanas.map(f => f.campana),
-        tipificaciones:tipificaciones.map(f => f.tipificacion),
+        campanas:campanasTodas.map(f => f.campana),
+        tipificaciones:[...tipificacionesSet].sort(),
       },
     });
   } catch (e) {
