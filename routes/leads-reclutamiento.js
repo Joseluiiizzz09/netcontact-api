@@ -537,6 +537,34 @@ router.patch('/entrevistas/:entrevistaId', auth(ROLES_ENTREVISTAS), async (req, 
   }
 });
 
+// DELETE /api/leads-reclutamiento/entrevistas/:entrevistaId — solo back-office
+// de reclutamiento, jefatura o usuarios (no el rol 'entrevistas' en sí, que
+// solo tipifica). Deja constancia en `eliminaciones` igual que el resto de
+// borrados del sistema.
+router.delete('/entrevistas/:entrevistaId', auth(ROLES_BACK), async (req, res) => {
+  try {
+    await asegurarTablaEntrevistas();
+    const [rows] = await db.query(`SELECT * FROM reclutamiento_entrevistas WHERE id = ?`, [req.params.entrevistaId]);
+    if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Entrevista no encontrada' });
+    const entrevista = rows[0];
+    const [actores] = await db.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+    const actor = actores[0] || {};
+    await db.query(`DELETE FROM reclutamiento_entrevistas WHERE id = ?`, [req.params.entrevistaId]);
+    await db.query(
+      `INSERT INTO eliminaciones
+        (actor_id, actor_nombre, actor_cargo, tipo, registro_id, detalle, snapshot_json)
+       VALUES (?, ?, ?, 'ENTREVISTA', ?, ?, ?)`,
+      [req.user.id, actor.nombre || 'Usuario', actor.cargo || req.user.cargo || '', String(req.params.entrevistaId),
+        `${entrevista.nombre_postulante || 'Sin nombre'} · ${entrevista.numero || entrevista.numero_ref || '—'} · Agendado por ${entrevista.creado_por_nombre || '—'}`,
+        JSON.stringify(entrevista)]
+    );
+    res.json({ ok: true, mensaje: 'Entrevista eliminada' });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, mensaje: 'Error al eliminar la entrevista' });
+  }
+});
+
 // POST /api/leads-reclutamiento/entrevistas/:entrevistaId/capacitacion — se
 // crea al tipificar la entrevista como ASISTE.
 router.post('/entrevistas/:entrevistaId/capacitacion', auth(ROLES_ENTREVISTAS), async (req, res) => {
