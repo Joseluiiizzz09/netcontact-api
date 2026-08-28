@@ -1919,8 +1919,12 @@ router.delete('/:id', auth(ROLES_BO), async (req, res) => {
     // Un teléfono real no puede desaparecer por una acción operativa de Back
     // Data. Las limpiezas de registros válidos quedan reservadas a Jefatura;
     // Back Data conserva la posibilidad de retirar filas vacías o corruptas.
+    // req.user.cargo puede ser el del usuario IMPERSONADO cuando Jefatura entra
+    // vía "Vista de" (ver middleware/auth.js) — ahí req.actor conserva el cargo
+    // real de quien está autenticado, y también debe contar como Jefatura.
+    const esJefaturaReal = req.user.cargo === 'jefatura' || req.actor?.cargo === 'jefatura';
     const n1Normalizado = normalizarN1(lead.n1);
-    if (n1Normalizado.length >= 8 && req.user.cargo !== 'jefatura') {
+    if (n1Normalizado.length >= 8 && !esJefaturaReal) {
       await conn.rollback();
       return res.status(403).json({
         ok: false,
