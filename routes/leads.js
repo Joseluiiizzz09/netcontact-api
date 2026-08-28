@@ -698,8 +698,12 @@ router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
     const tipifSql = `COALESCE(NULLIF(TRIM(l.tipif_vend),''), NULLIF(TRIM(l.tipif_back_2),''), NULLIF(TRIM(l.tipif_back),''), 'SIN TIPIFICAR')`;
     const condiciones = [];
     const params = [];
-    if (desde) { condiciones.push('DATE(l.created_at) >= ?'); params.push(desde); }
-    if (hasta) { condiciones.push('DATE(l.created_at) <= ?'); params.push(hasta); }
+    // Por `fecha` (día de trabajo real), no por created_at (cuándo se cargó en
+    // la BD) — deben coincidir con lo que Backoffice cuenta como "Fecha activa"
+    // para la misma fecha. Ver también leads-reclutamiento.js, que ya usaba
+    // l.fecha correctamente en su propio marketing-resumen.
+    if (desde) { condiciones.push('l.fecha >= ?'); params.push(desde); }
+    if (hasta) { condiciones.push('l.fecha <= ?'); params.push(hasta); }
     if (campana) { condiciones.push(`${campanaSql} = ?`); params.push(normalizarCampana(campana) || campana); }
     if (tipificacion) { condiciones.push(`${tipifSql} = ?`); params.push(tipificacion); }
     const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
