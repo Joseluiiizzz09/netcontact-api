@@ -934,6 +934,85 @@ router.patch('/cobranza/:id/codigo-pago', auth(['cobranzas']), async (req, res) 
   }
 });
 
+// Carga masiva del código de pago (reporte de facturación pegado por Jefatura).
+// Cruza cada fila por SOT contra `ventas` y solo escribe cobranza_gestiones.codigo_pago —
+// el ciclo de facturación y los recibos (PAGADO/PENDIENTE) siguen siendo 100% manuales.
+router.post('/cobranza-codigos-masivo', auth(['jefatura']), async (req, res) => {
+  try {
+    await asegurarTablaCobranza();
+    const filas = Array.isArray(req.body?.filas) ? req.body.filas : [];
+    if (!filas.length) return res.status(400).json({ ok:false, mensaje:'No se recibieron filas para procesar.' });
+    if (filas.length > 2000) return res.status(400).json({ ok:false, mensaje:'Máximo 2000 filas por lote.' });
+
+    const actorNombre = req.user.nombre || req.user.usuario || 'Jefatura';
+    const resultados = [];
+
+    for (const fila of filas) {
+      const nombre = String(fila?.nombre || '').trim();
+      const documento = String(fila?.documento || '').trim();
+      const fechaOficial = String(fila?.fecha_oficial || '').trim();
+      const sot = String(fila?.sot || '').trim();
+      const codigoPago = String(fila?.codigo_pago || '').trim();
+
+      if (!sot) { resultados.push({ nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'sin_sot' }); continue; }
+      if (!codigoPago) { resultados.push({ nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'sin_codigo' }); continue; }
+      if (codigoPago.length > 60) { resultados.push({ nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'codigo_muy_largo' }); continue; }
+
+      const [ventas] = await db.query(`
+        SELECT v.id, v.telefono1, v.telefono2, u.sala,
+               COALESCE(u.nombre, v.asesor_nombre) AS vendedor_nombre,
+               cb.codigo_pago AS codigo_pago_actual
+          FROM ventas v
+          LEFT JOIN usuarios u ON u.id = v.asesor_id
+          LEFT JOIN cobranza_gestiones cb ON cb.venta_id = v.id
+         WHERE UPPER(TRIM(v.sot)) = ?
+         ORDER BY v.id DESC LIMIT 1
+      `, [sot.toUpperCase()]);
+
+      if (!ventas.length) {
+        resultados.push({ nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'no_encontrado' });
+        continue;
+      }
+      const venta = ventas[0];
+      const base = {
+        nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago,
+        venta_id: venta.id, vendedor: venta.vendedor_nombre || '', sala: venta.sala || '',
+        telefono1: venta.telefono1 || '', telefono2: venta.telefono2 || '',
+      };
+
+      if ((venta.codigo_pago_actual || '') === codigoPago) {
+        resultados.push({ ...base, estado: 'sin_cambios' });
+        continue;
+      }
+
+      await db.query(`
+        INSERT INTO cobranza_gestiones (venta_id, codigo_pago, actualizado_por_id, actualizado_por_nombre)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE codigo_pago=VALUES(codigo_pago),
+          actualizado_por_id=VALUES(actualizado_por_id), actualizado_por_nombre=VALUES(actualizado_por_nombre), updated_at=CURRENT_TIMESTAMP
+      `, [venta.id, codigoPago, req.user.id, actorNombre]);
+      await db.query(
+        `INSERT INTO cobranza_historial (venta_id,campo,valor_anterior,valor_nuevo,usuario_id,usuario_nombre) VALUES (?,?,?,?,?,?)`,
+        [venta.id, 'codigo_pago', venta.codigo_pago_actual || '—', codigoPago, req.user.id, actorNombre]
+      );
+      resultados.push({ ...base, estado: 'actualizado' });
+    }
+
+    const resumen = {
+      total: filas.length,
+      actualizados: resultados.filter(r => r.estado === 'actualizado').length,
+      sin_cambios: resultados.filter(r => r.estado === 'sin_cambios').length,
+      no_encontrados: resultados.filter(r => r.estado === 'no_encontrado').length,
+      sin_sot: resultados.filter(r => r.estado === 'sin_sot').length,
+      sin_codigo: resultados.filter(r => r.estado === 'sin_codigo').length,
+    };
+    res.json({ ok: true, resumen, resultados });
+  } catch (e) {
+    console.error('[POST /ventas/cobranza-codigos-masivo]', e.message || e);
+    res.status(500).json({ ok: false, mensaje: 'Error al procesar el lote de códigos de pago' });
+  }
+});
+
 router.patch('/cobranza/:id/recibo', auth(['cobranzas']), async (req, res) => {
   try {
     if (!esEscrituraCobranzaValida(req)) {
