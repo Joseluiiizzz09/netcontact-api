@@ -717,7 +717,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
           OR REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
              ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION')`;
     const [data] = await db.query(`
-      SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
+      SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete, v.canal,
              COALESCE(u.nombre, v.asesor_nombre) AS vendedor_nombre${camposCalidad}${camposCobranza},
              COALESCE(inst.fecha_instalacion,
                CASE WHEN REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
@@ -1615,20 +1615,24 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
   if (!Number.isInteger(ventaId) || ventaId <= 0)
     return res.status(400).json({ ok: false, mensaje: 'ID de venta no válido.' });
 
-  const { tipificacion, observacion, estadoAnteriorEsperado } = req.body;
+  const { tipificacion, observacion, estadoAnteriorEsperado, canal } = req.body;
   const obsTexto = String(observacion || '').trim();
+  const CANALES_VALIDOS = ['NETCONTACT', 'KELS'];
+  const canalNorm = canal ? String(canal).trim().toUpperCase() : null;
 
   if (tipificacion && !TIPS_VALIDACION.includes(tipificacion))
     return res.status(400).json({ ok: false, mensaje: 'Tipificación inválida.' });
   if (!tipificacion && !obsTexto)
     return res.status(400).json({ ok: false, mensaje: 'Selecciona una tipificación o escribe una observación.' });
+  if (canalNorm && !CANALES_VALIDOS.includes(canalNorm))
+    return res.status(400).json({ ok: false, mensaje: 'Canal inválido.' });
 
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
 
     const [rows] = await conn.query(
-      `SELECT id, estado, obs_validacion FROM ventas WHERE id = ? FOR UPDATE`,
+      `SELECT id, estado, obs_validacion, canal FROM ventas WHERE id = ? FOR UPDATE`,
       [ventaId]
     );
     if (!rows.length) {
@@ -1650,6 +1654,13 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
           mensaje: 'Esta venta ya avanzó en el flujo. No se puede revertir a VENTA desde Validación.',
         });
       }
+    }
+
+    // El canal (NETCONTACT/KELS) es obligatorio para confirmar VENTA o
+    // VALIDADO — define el origen comercial de la venta hacia adelante.
+    if ((tipificacion === 'venta' || tipificacion === 'validado') && !canalNorm && !venta.canal) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, mensaje: 'Selecciona el canal (NETCONTACT o KELS) antes de guardar.' });
     }
 
     // Control de concurrencia optimista
@@ -1681,13 +1692,13 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
 
     if (nuevoEstado) {
       await conn.query(
-        `UPDATE ventas SET estado = ?, obs_validacion = ? WHERE id = ?`,
-        [nuevoEstado, nuevoHistorialTexto, ventaId]
+        `UPDATE ventas SET estado = ?, obs_validacion = ?${canalNorm ? ', canal = ?' : ''} WHERE id = ?`,
+        canalNorm ? [nuevoEstado, nuevoHistorialTexto, canalNorm, ventaId] : [nuevoEstado, nuevoHistorialTexto, ventaId]
       );
     } else {
       await conn.query(
-        `UPDATE ventas SET obs_validacion = ? WHERE id = ?`,
-        [nuevoHistorialTexto, ventaId]
+        `UPDATE ventas SET obs_validacion = ?${canalNorm ? ', canal = ?' : ''} WHERE id = ?`,
+        canalNorm ? [nuevoHistorialTexto, canalNorm, ventaId] : [nuevoHistorialTexto, ventaId]
       );
     }
 
@@ -1714,6 +1725,16 @@ router.patch('/:id/tipificar-validacion', auth(['validacion','jefatura']), async
         ? `${TIP_LABELS_VAL[tipificacion]}${obsTexto ? ': ' + obsTexto : ''}`
         : `Observación: ${obsTexto}`,
     });
+
+    if (canalNorm && canalNorm !== venta.canal) {
+      await registrarHistorial(conn, ventaId, actor, {
+        tipo:          'CAMBIO_VALIDACION',
+        campo:         'canal',
+        etiqueta:      'Canal de la venta',
+        valorAnterior: venta.canal || 'SIN CANAL',
+        valorNuevo:    canalNorm,
+      });
+    }
 
     await conn.commit();
 

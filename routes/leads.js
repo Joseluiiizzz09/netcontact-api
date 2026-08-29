@@ -451,7 +451,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         const [ventas] = await db.query(
           `SELECT v.id, v.telefono1, v.asesor_id, u.nombre AS asesor_nombre,
                   v.dni AS venta_documento, v.tipo_doc AS venta_tipo_doc,
-                  v.estado, v.estado_grab, v.motivo_seguimiento, v.created_at AS venta_created_at
+                  v.estado, v.estado_grab, v.motivo_seguimiento, v.created_at AS venta_created_at, v.canal
              FROM ventas v LEFT JOIN usuarios u ON u.id = v.asesor_id
             WHERE v.telefono1 IN (${placeholders})
               AND v.id = (SELECT MAX(v2.id) FROM ventas v2 WHERE v2.telefono1 = v.telefono1)`,
@@ -563,6 +563,7 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         venta_asesor_nombre: ventaAsesorNombre,
         venta_documento: ventaInfo?.venta_documento || '',
         venta_tipo_doc: ventaInfo?.venta_tipo_doc || '',
+        venta_canal: ventaInfo?.canal || '',
         tipif_interna: cicloAbiertoParaAsesor ? '' : (tipifInterna?.tipificacion || ''),
         tipif_interna_color: cicloAbiertoParaAsesor ? '' : (tipifInterna?.color || ''),
         tipif_interna_area: cicloAbiertoParaAsesor ? '' : (tipifInterna?.area || ''),
