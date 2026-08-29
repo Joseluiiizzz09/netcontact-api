@@ -707,8 +707,9 @@ router.patch('/capacitaciones/:capacitacionId', auth(ROLES_CAPACITACION), async 
 // GET /api/leads-reclutamiento/marketing-resumen
 // Espejo de /api/leads/marketing-resumen (Backoffice comercial) pero sobre
 // leads_reclutamiento — mismo reporte para Marketing, ahora tambien para
-// las campañas de reclutamiento.
-router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
+// las campañas de reclutamiento. 'marketing' es el cargo acotado con acceso
+// solo a este reporte (su propia página /marketing-leads).
+router.get('/marketing-resumen', auth(['jefatura','marketing']), async (req, res) => {
   try {
     const desde = String(req.query.desde || '').trim();
     const hasta = String(req.query.hasta || '').trim();

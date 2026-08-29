@@ -677,8 +677,10 @@ router.get('/ventas-cerradas', auth(['asesor', 'jefatura', 'usuarios']), async (
 });
 
 // GET /api/leads/marketing-resumen
-// Resumen agregado y exclusivo de Jefatura para trasladar resultados a Marketing.
-router.get('/marketing-resumen', auth(['jefatura']), async (req, res) => {
+// Resumen agregado para trasladar resultados a Marketing — Jefatura ve todo
+// el panel, y el cargo 'marketing' tiene acceso acotado solo a este reporte
+// (su propia página, /marketing-leads, sin el resto de Jefatura).
+router.get('/marketing-resumen', auth(['jefatura','marketing']), async (req, res) => {
   try {
     const desde = String(req.query.desde || '').trim();
     const hasta = String(req.query.hasta || '').trim();
