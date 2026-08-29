@@ -737,6 +737,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
            GROUP BY venta_id
         ) inst ON inst.venta_id = v.id
        WHERE ${filtroInstalado}
+         AND UPPER(TRIM(COALESCE(v.canal, ''))) <> 'KELS'
        ORDER BY fecha_instalacion DESC, v.id DESC
     `);
     const [usuariosCalidad] = incluyeCalidad
