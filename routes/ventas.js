@@ -712,16 +712,16 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
     const soloInstaladoActual = incluyeCalidad && !incluyeCobranza;
     const filtroInstalado = soloInstaladoActual
       ? `REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
-             ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')`
+             ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION')`
       : `inst.fecha_instalacion IS NOT NULL
           OR REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
-             ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')`;
+             ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION')`;
     const [data] = await db.query(`
       SELECT v.id, v.nombre, v.dni, v.sot, v.telefono1, v.telefono2, v.paquete,
              COALESCE(u.nombre, v.asesor_nombre) AS vendedor_nombre${camposCalidad}${camposCobranza},
              COALESCE(inst.fecha_instalacion,
                CASE WHEN REPLACE(UPPER(TRIM(COALESCE(v.estado, ''))), '_', ' ') IN
-                 ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
+                 ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION')
                THEN v.created_at END
              ) AS fecha_instalacion
         FROM ventas v
@@ -733,7 +733,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
             FROM venta_historial
            WHERE campo = 'estado'
              AND REPLACE(UPPER(TRIM(COALESCE(valor_nuevo, ''))), '_', ' ') IN
-                 ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION', 'SERVICIO ACTIVO')
+                 ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION')
            GROUP BY venta_id
         ) inst ON inst.venta_id = v.id
        WHERE ${filtroInstalado}
