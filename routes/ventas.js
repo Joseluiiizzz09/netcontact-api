@@ -736,7 +736,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
                  ('INSTALADO', 'INSTALADO NO VALIDADO', 'REASIGNACION')
            GROUP BY venta_id
         ) inst ON inst.venta_id = v.id
-       WHERE ${filtroInstalado}
+       WHERE (${filtroInstalado})
          AND UPPER(TRIM(COALESCE(v.canal, ''))) <> 'KELS'
        ORDER BY fecha_instalacion DESC, v.id DESC
     `);
