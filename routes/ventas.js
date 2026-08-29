@@ -948,18 +948,17 @@ router.post('/cobranza-codigos-masivo', auth(['jefatura']), async (req, res) => 
     const resultados = [];
 
     for (const fila of filas) {
-      const nombre = String(fila?.nombre || '').trim();
       const documento = String(fila?.documento || '').trim();
       const fechaOficial = String(fila?.fecha_oficial || '').trim();
       const sot = String(fila?.sot || '').trim();
       const codigoPago = String(fila?.codigo_pago || '').trim();
 
-      if (!sot) { resultados.push({ nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'sin_sot' }); continue; }
-      if (!codigoPago) { resultados.push({ nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'sin_codigo' }); continue; }
-      if (codigoPago.length > 60) { resultados.push({ nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'codigo_muy_largo' }); continue; }
+      if (!sot) { resultados.push({ documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'sin_sot' }); continue; }
+      if (!codigoPago) { resultados.push({ documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'sin_codigo' }); continue; }
+      if (codigoPago.length > 60) { resultados.push({ documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'codigo_muy_largo' }); continue; }
 
       const [ventas] = await db.query(`
-        SELECT v.id, v.telefono1, v.telefono2, u.sala,
+        SELECT v.id, v.nombre, v.telefono1, v.telefono2, u.sala,
                COALESCE(u.nombre, v.asesor_nombre) AS vendedor_nombre,
                cb.codigo_pago AS codigo_pago_actual
           FROM ventas v
@@ -970,13 +969,13 @@ router.post('/cobranza-codigos-masivo', auth(['jefatura']), async (req, res) => 
       `, [sot.toUpperCase()]);
 
       if (!ventas.length) {
-        resultados.push({ nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'no_encontrado' });
+        resultados.push({ documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago, estado: 'no_encontrado' });
         continue;
       }
       const venta = ventas[0];
       const base = {
-        nombre, documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago,
-        venta_id: venta.id, vendedor: venta.vendedor_nombre || '', sala: venta.sala || '',
+        documento, sot, fecha_oficial: fechaOficial, codigo_pago: codigoPago,
+        venta_id: venta.id, nombre_sistema: venta.nombre || '', vendedor: venta.vendedor_nombre || '', sala: venta.sala || '',
         telefono1: venta.telefono1 || '', telefono2: venta.telefono2 || '',
       };
 
