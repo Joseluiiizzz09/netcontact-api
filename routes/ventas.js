@@ -2006,8 +2006,12 @@ router.patch('/:id/datos', auth(['supervisor','jefatura','seguimiento','usuarios
       paquete, cuotaInstalacion, hogar, tec, full, plano,
       fechaNac, lugarNac, padre, madre,
       cantDecos, cantMesh,
-      observacion,
+      observacion, canal,
     } = req.body;
+    const CANALES_VALIDOS_DATOS = ['NETCONTACT', 'KELS'];
+    const canalNormDatos = canal !== undefined ? (canal ? String(canal).trim().toUpperCase() : '') : undefined;
+    if (canalNormDatos && !CANALES_VALIDOS_DATOS.includes(canalNormDatos))
+      return res.status(400).json({ ok: false, mensaje: 'Canal inválido.' });
 
     const errores = validar([
       errorTexto(nombre,         'nombre',         { max: 150 }),
@@ -2077,6 +2081,7 @@ router.patch('/:id/datos', auth(['supervisor','jefatura','seguimiento','usuarios
     agregar('cant_decos',  cantDecos !== undefined ? (parseInt(cantDecos) || 0) : undefined);
     agregar('cant_mesh',   cantMesh  !== undefined ? (parseInt(cantMesh)  || 0) : undefined);
     agregar('observacion', observacion);
+    agregar('canal',       canalNormDatos);
 
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'Nada que actualizar.' });
 
