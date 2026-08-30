@@ -617,6 +617,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         }
       }
       for (const duplicado of grupo.slice(1)) {
+        // TERNA (blacklist) es permanente: no debe ocultarse detras de la
+        // proyeccion NO ROTAR de duplicados del mismo numero+dia.
+        if (String(duplicado.tipif_vend || '').trim().toUpperCase() === 'TERNA') continue;
         duplicado.tipif_vend = 'NO ROTAR';
         duplicado.rotaciones = principal.rotaciones;
       }
