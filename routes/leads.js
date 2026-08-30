@@ -980,8 +980,9 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
             [campana, distrito, n1Raw, n2Clean, tipifBack, asesorId, asesorNombre, fechaLead, hora, sinAsignar, tipifVend, hora, JSON.stringify(historialArray), rotaciones, obsAsesor, req.user.id, cargadoPorImport, req.user.usuario || '', ipCarga]
           );
           creados++;
-          if (enBlacklistImport) bloqueadosTernaImport.push({ id: result.insertId, n1: n1Raw });
-          if (esTipificacionOrigen(tipifVend)) {
+          if (enBlacklistImport) {
+            bloqueadosTernaImport.push({ id: result.insertId, n1: n1Raw });
+          } else if (esTipificacionOrigen(tipifVend)) {
             await bloquearOtrasCampanasDelDia(conn, { id:result.insertId, n1:n1Raw, fecha:fechaLead, campana });
           }
         }
