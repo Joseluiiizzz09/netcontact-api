@@ -268,6 +268,21 @@ async function idLeadMasAntiguoDelDia(conn, n1, fecha) {
   return rows[0]?.id || null;
 }
 
+// Blacklist: un numero que alguna vez fue tipificado TERNA (en cualquier
+// fecha/campana) queda marcado para siempre. Si vuelve a ingresar como lead
+// nuevo, se tipifica TERNA automaticamente en vez de entrar como pendiente.
+async function huboTernaAlgunaVez(conn, n1) {
+  const numero = normalizarN1(n1);
+  if (!numero) return false;
+  const [rows] = await conn.query(`
+    SELECT id FROM leads
+    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+      AND UPPER(TRIM(tipif_vend)) = 'TERNA'
+    LIMIT 1
+  `, [numero]);
+  return rows.length > 0;
+}
+
 async function bloquearOtrasCampanasDelDia(conn, lead) {
   const n1 = normalizarN1(lead?.n1);
   const fecha = normalizarFechaAsignacion(lead?.fecha) || fechaPeruHoy();
@@ -1008,6 +1023,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     const ids = [];
     const fechasUsadas = [];
     const omitidosN1 = [];
+    const bloqueadosTernaN1 = [];
 
     // Validar todas las fechas antes de insertar para evitar lotes parciales.
     for (const l of leads) {
@@ -1081,7 +1097,8 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
 
       const horaFinal  = asesorId ? horaAhora : '';
       const tipifBackInicial = normalizarTipifBack(l.tipif_back);
-      const bloquearRotacion = Boolean(await idLeadMasAntiguoDelDia(db, n1Normalizado, fechaLead));
+      const enBlacklist = await huboTernaAlgunaVez(db, n1Normalizado);
+      const bloquearRotacion = !enBlacklist && Boolean(await idLeadMasAntiguoDelDia(db, n1Normalizado, fechaLead));
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
       const nombreCargador = await nombreUsuario(req.user.id);
       const historial  = asesorId
@@ -1102,7 +1119,10 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         req.user.id, nombreCargador, req.user.usuario || '', req.ip || req.socket?.remoteAddress || ''
       ]);
       ids.push(result.insertId);
-      if (bloquearRotacion) {
+      if (enBlacklist) {
+        await db.query(`UPDATE leads SET tipif_vend='TERNA', tipif_hora=? WHERE id=?`, [horaAhora, result.insertId]);
+        bloqueadosTernaN1.push(n1Normalizado);
+      } else if (bloquearRotacion) {
         await db.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaAhora, result.insertId]);
       }
       fechasUsadas.push(fechaLead);
@@ -1115,6 +1135,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       omitidos,
       omitidos_n1: omitidosN1,
       ids,
+      bloqueados_terna_n1: bloqueadosTernaN1,
       mensaje: `${creados} lead(s) creado(s)${omitidos ? `, ${omitidos} omitido(s) por ya existir en la misma campaña ese día` : ''}`,
       fecha_usada: fechasUsadas[0] || fechaHoy,
       fechas_usadas: [...new Set(fechasUsadas)],
