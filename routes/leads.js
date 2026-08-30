@@ -876,6 +876,7 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
 
     let creados = 0, actualizados = 0, existentes = 0, errores = 0;
     const erroresDetalle = [];
+    const bloqueadosTernaImport = [];
     const cargadoPorImport = await nombreUsuario(req.user.id);
     const ipCarga = req.ip || req.socket?.remoteAddress || '';
 
@@ -901,6 +902,8 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
         const tipifBack  = normalizarTipifBack(l.tipif_back);
         let tipifVend  = normalizarTipifVendLegacy(l.tipif_vend).substring(0, 100);
         if (await existeTipificadoOtraCampana(conn, n1Raw, fechaLead, campana)) tipifVend = 'NO ROTAR';
+        const enBlacklistImport = await huboTernaAlgunaVez(conn, n1Raw);
+        if (enBlacklistImport) tipifVend = 'TERNA';
         const hora       = String(l.hora       || '').trim().substring(0, 10);
         const obsAsesor  = String(l.comentario || '').trim().substring(0, 2000) || null;
 
@@ -958,6 +961,7 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
               `UPDATE leads SET historial=?, asesor_id=?, asesor_nombre=?, tipif_vend=?, tipif_hora=?, sin_asignar=?, rotaciones=?, obs_asesor=COALESCE(NULLIF(obs_asesor,''),?) WHERE id=?`,
               [JSON.stringify(historialArray), asesorId, asesorNombre, tipifVend, hora, sinAsignar, rotaciones, obsAsesor, existing[0].id]
             );
+            if (enBlacklistImport) bloqueadosTernaImport.push({ id: existing[0].id, n1: n1Raw });
             actualizados++;
           } else if (existingHist.length > 0 && !existingObs && obsAsesor) {
             // Historial ya existe pero falta obs_asesor (p.ej. DNI de una re-importación)
@@ -976,6 +980,7 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
             [campana, distrito, n1Raw, n2Clean, tipifBack, asesorId, asesorNombre, fechaLead, hora, sinAsignar, tipifVend, hora, JSON.stringify(historialArray), rotaciones, obsAsesor, req.user.id, cargadoPorImport, req.user.usuario || '', ipCarga]
           );
           creados++;
+          if (enBlacklistImport) bloqueadosTernaImport.push({ id: result.insertId, n1: n1Raw });
           if (esTipificacionOrigen(tipifVend)) {
             await bloquearOtrasCampanasDelDia(conn, { id:result.insertId, n1:n1Raw, fecha:fechaLead, campana });
           }
@@ -997,6 +1002,7 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
       existentes,
       errores,
       erroresDetalle: erroresDetalle.slice(0, 30),
+      bloqueados_terna: bloqueadosTernaImport,
     });
 
   } catch (e) {
@@ -1023,7 +1029,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     const ids = [];
     const fechasUsadas = [];
     const omitidosN1 = [];
-    const bloqueadosTernaN1 = [];
+    const bloqueadosTerna = [];
 
     // Validar todas las fechas antes de insertar para evitar lotes parciales.
     for (const l of leads) {
@@ -1121,7 +1127,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       ids.push(result.insertId);
       if (enBlacklist) {
         await db.query(`UPDATE leads SET tipif_vend='TERNA', tipif_hora=? WHERE id=?`, [horaAhora, result.insertId]);
-        bloqueadosTernaN1.push(n1Normalizado);
+        bloqueadosTerna.push({ id: result.insertId, n1: n1Normalizado });
       } else if (bloquearRotacion) {
         await db.query(`UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=? WHERE id=?`, [horaAhora, result.insertId]);
       }
@@ -1135,7 +1141,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       omitidos,
       omitidos_n1: omitidosN1,
       ids,
-      bloqueados_terna_n1: bloqueadosTernaN1,
+      bloqueados_terna: bloqueadosTerna,
       mensaje: `${creados} lead(s) creado(s)${omitidos ? `, ${omitidos} omitido(s) por ya existir en la misma campaña ese día` : ''}`,
       fecha_usada: fechasUsadas[0] || fechaHoy,
       fechas_usadas: [...new Set(fechasUsadas)],
