@@ -477,8 +477,39 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     // Segunda query: datos de ventas para todos los teléfonos en un solo round-trip.
     // Reemplaza las 3 subqueries correlacionadas que antes se ejecutaban una vez por fila.
     let ventaMap = new Map(); // TRIM(telefono1) -> { venta_asesor_id, venta_asesor_nombre }
+    const sinCoberturaPorNumero = new Map();
+    const sinCoberturaPorUsuario = new Map();
     if (data.length > 0) {
       const phones = [...new Set(data.map(l => (l.n1 || '').trim()).filter(Boolean))];
+      const usuariosWhatsapp = [...new Set(data
+        .map(l => normalizarUsuarioWhatsapp(l.usuario_whatsapp).toLowerCase())
+        .filter(Boolean))];
+      if (phones.length > 0 || usuariosWhatsapp.length > 0) {
+        const condicionesCobertura = [];
+        const paramsCobertura = [];
+        if (phones.length > 0) {
+          condicionesCobertura.push(`TRIM(n1) IN (${phones.map(() => '?').join(',')})`);
+          paramsCobertura.push(...phones);
+        }
+        if (usuariosWhatsapp.length > 0) {
+          condicionesCobertura.push(`LOWER(TRIM(REPLACE(usuario_whatsapp,'@',''))) IN (${usuariosWhatsapp.map(() => '?').join(',')})`);
+          paramsCobertura.push(...usuariosWhatsapp);
+        }
+        const [antecedentesCobertura] = await db.query(
+          `SELECT id, n1, usuario_whatsapp, distrito_sin_cobertura, coordenadas_sin_cobertura
+             FROM leads
+            WHERE UPPER(TRIM(COALESCE(tipif_vend,'')))='SIN COBERTURA'
+              AND (${condicionesCobertura.join(' OR ')})
+            ORDER BY id DESC`,
+          paramsCobertura
+        );
+        for (const antecedente of antecedentesCobertura) {
+          const numero = normalizarN1(antecedente.n1);
+          const usuario = normalizarUsuarioWhatsapp(antecedente.usuario_whatsapp).toLowerCase();
+          if (numero && !sinCoberturaPorNumero.has(numero)) sinCoberturaPorNumero.set(numero, antecedente);
+          if (usuario && !sinCoberturaPorUsuario.has(usuario)) sinCoberturaPorUsuario.set(usuario, antecedente);
+        }
+      }
       if (phones.length > 0) {
         const placeholders = phones.map(() => '?').join(',');
         const [ventas] = await db.query(
@@ -533,6 +564,14 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const rotacionesReales = Number(resumenDia?.rotaciones || contarRotacionesHistorial(historial));
       const esPrincipalDia = Number(resumenDia?.id) === Number(l.id);
       const tipifPersistida = normalizarTipifVendLegacy(l.tipif_vend);
+      const antecedenteSinCobertura = sinCoberturaPorNumero.get(normalizarN1(l.n1))
+        || sinCoberturaPorUsuario.get(normalizarUsuarioWhatsapp(l.usuario_whatsapp).toLowerCase())
+        || null;
+      const alertaSinCobertura = Boolean(
+        antecedenteSinCobertura
+        && Number(antecedenteSinCobertura.id) !== Number(l.id)
+        && String(tipifPersistida || '').trim().toUpperCase() !== 'SIN COBERTURA'
+      );
       const tipifVisible = esPrincipalDia && String(tipifPersistida).toUpperCase() === 'NO ROTAR'
         ? (ultimaTipificacionVendedorHistorial(historial) || tipifPersistida)
         : tipifPersistida;
@@ -602,6 +641,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         tipif_interna_area: cicloAbiertoParaAsesor ? '' : (tipifInterna?.area || ''),
         tipif_interna_fecha: cicloAbiertoParaAsesor ? '' : (tipifInterna?.fecha || ''),
         tipif_interna_motivo: cicloAbiertoParaAsesor ? '' : (tipifInterna?.motivo || ''),
+        alerta_sin_cobertura: alertaSinCobertura ? 1 : 0,
+        alerta_sin_cobertura_distrito: alertaSinCobertura ? (antecedenteSinCobertura.distrito_sin_cobertura || '') : '',
+        alerta_sin_cobertura_coordenadas: alertaSinCobertura ? (antecedenteSinCobertura.coordenadas_sin_cobertura || '') : '',
         ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
         obs_asesor_personal: obsAsesorPersonal,
