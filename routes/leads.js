@@ -333,6 +333,24 @@ async function nombreUsuario(id) {
   return rows[0]?.nombre || 'Usuario Back Data';
 }
 
+function esCargaAutomaticaPrizma(usuario) {
+  return ['sistema-prizma', 'sistema_prizma'].includes(String(usuario || '').trim().toLowerCase());
+}
+
+async function obtenerResponsablesBackActivos() {
+  const [rows] = await db.query(`
+    SELECT id, nombre, usuario
+    FROM usuarios
+    WHERE cargo = 'backoffice' AND activo = 1
+    ORDER BY id
+  `);
+  return rows;
+}
+
+function elegirAleatorio(items) {
+  return items.length ? items[Math.floor(Math.random() * items.length)] : null;
+}
+
 // GET /api/leads
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
@@ -1034,6 +1052,8 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     const fechasUsadas = [];
     const omitidosN1 = [];
     const bloqueadosTerna = [];
+    const cargaAutomaticaPrizma = esCargaAutomaticaPrizma(req.user.usuario);
+    const responsablesBack = cargaAutomaticaPrizma ? await obtenerResponsablesBackActivos() : [];
 
     // Validar todas las fechas antes de insertar para evitar lotes parciales.
     for (const l of leads) {
@@ -1110,10 +1130,21 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const enBlacklist = await huboTernaAlgunaVez(db, n1Normalizado);
       const bloquearRotacion = !enBlacklist && Boolean(await idLeadMasAntiguoDelDia(db, n1Normalizado, fechaLead));
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
-      const nombreCargador = await nombreUsuario(req.user.id);
+      const responsableBack = elegirAleatorio(responsablesBack);
+      const autorCarga = responsableBack || {
+        id: req.user.id,
+        nombre: await nombreUsuario(req.user.id),
+        usuario: req.user.usuario || '',
+      };
+      const nombreCargador = autorCarga.nombre;
+      const datosOrigenAutomatico = cargaAutomaticaPrizma ? {
+        origenCarga: 'Sistema Prizma',
+        origenUsuario: req.user.usuario || 'sistema-prizma',
+        asignacionAutomatica: true,
+      } : {};
       const historial  = asesorId
-        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaLead, asignadoPor: nombreCargador, cargadoPor: nombreCargador, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1 }])
-        : JSON.stringify([{ tipo: 'CARGA', cargadoPor: nombreCargador, hora: horaPeruAhora(), fecha: fechaLead, motivo: 'Carga inicial' }]);
+        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaLead, asignadoPor: nombreCargador, cargadoPor: nombreCargador, cargadoPorUsuario: autorCarga.usuario, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1, ...datosOrigenAutomatico }])
+        : JSON.stringify([{ tipo: 'CARGA', cargadoPor: nombreCargador, cargadoPorUsuario: autorCarga.usuario, hora: horaPeruAhora(), fecha: fechaLead, motivo: cargaAutomaticaPrizma ? 'Carga automatica Prizma' : 'Carga inicial', ...datosOrigenAutomatico }]);
 
       const tipifBack = tipifBackInicial;
       const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
@@ -1126,7 +1157,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
         registraAutor ? req.user.id : null, derivadoPorNombre,
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, asesorId?1:0,
-        req.user.id, nombreCargador, req.user.usuario || '', req.ip || req.socket?.remoteAddress || ''
+        autorCarga.id, nombreCargador, autorCarga.usuario, req.ip || req.socket?.remoteAddress || ''
       ]);
       ids.push(result.insertId);
       if (enBlacklist) {
