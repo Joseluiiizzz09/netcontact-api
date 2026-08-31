@@ -1210,7 +1210,18 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
     if (n2 !== undefined && String(n2 || '').trim() && !n2Normalizado) {
       return res.status(400).json({ ok: false, mensaje: 'N2 debe contener entre 7 y 9 dígitos' });
     }
-    if (n1Normalizado !== undefined) {
+    const [actuales] = await db.query(
+      `SELECT id, n1 FROM leads WHERE id=? LIMIT 1`,
+      [req.params.id]
+    );
+    if (!actuales.length) {
+      return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    }
+    const n1ActualNormalizado = normalizarN1(actuales[0].n1);
+    // Al editar solamente el número de referencia (N2), el frontend también
+    // envía el N1 actual. No debe bloquearse por otros ciclos/registros que ya
+    // compartían legítimamente ese N1; la duplicidad se valida solo al cambiarlo.
+    if (n1Normalizado !== undefined && n1Normalizado !== n1ActualNormalizado) {
       const [duplicados] = await db.query(
         `SELECT otro.id FROM leads actual
          INNER JOIN leads otro ON otro.fecha = actual.fecha AND otro.n1 = ? AND otro.id <> actual.id
