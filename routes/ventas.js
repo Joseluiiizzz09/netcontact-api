@@ -702,6 +702,7 @@ router.get('/cobranzas-listado', auth(['cobranzas','calidad','supcalidad','jefat
              cb.recibo5_fecha_llamada AS cobranza_recibo5_fecha_llamada,
              cb.recibo6_tipificacion_llamada AS cobranza_recibo6_tipificacion_llamada,
              cb.recibo6_fecha_llamada AS cobranza_recibo6_fecha_llamada,
+             cb.actualizado_por_nombre AS cobranza_actualizado_por_nombre,
              cb.updated_at AS cobranza_updated_at` : '';
     const joinCalidad = incluyeCalidad ? 'LEFT JOIN calidad_gestiones cg ON cg.venta_id = v.id' : '';
     const joinCobranza = incluyeCobranza ? 'LEFT JOIN cobranza_gestiones cb ON cb.venta_id = v.id' : '';
