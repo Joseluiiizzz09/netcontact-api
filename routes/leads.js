@@ -2279,25 +2279,43 @@ function asegurarTablaMarketingGastos() {
           id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
           fecha DATE NOT NULL,
           campana VARCHAR(100) NOT NULL,
+          tipo VARCHAR(20) NOT NULL DEFAULT 'ventas',
           monto DECIMAL(10,2) NOT NULL,
           notas VARCHAR(255) NULL,
           registrado_por_id INT NULL,
           registrado_por_nombre VARCHAR(150) NULL,
           created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          UNIQUE KEY uniq_marketing_gasto_fecha_campana (fecha, campana)
+          UNIQUE KEY uniq_marketing_gasto_fecha_campana_tipo (fecha, campana, tipo)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
       `);
+      // Migracion para instalaciones donde la tabla ya existia sin `tipo`
+      // (distingue campañas de Ventas vs Reclutamiento, que son catálogos
+      // independientes y pueden repetir nombre de campaña).
+      const [columnas] = await db.query('SHOW COLUMNS FROM marketing_gastos');
+      if (!columnas.some(c => c.Field === 'tipo')) {
+        await db.query("ALTER TABLE marketing_gastos ADD COLUMN tipo VARCHAR(20) NOT NULL DEFAULT 'ventas' AFTER campana");
+        const [indices] = await db.query('SHOW INDEX FROM marketing_gastos');
+        if (indices.some(i => i.Key_name === 'uniq_marketing_gasto_fecha_campana')) {
+          await db.query('ALTER TABLE marketing_gastos DROP INDEX uniq_marketing_gasto_fecha_campana');
+        }
+        if (!indices.some(i => i.Key_name === 'uniq_marketing_gasto_fecha_campana_tipo')) {
+          await db.query('ALTER TABLE marketing_gastos ADD UNIQUE KEY uniq_marketing_gasto_fecha_campana_tipo (fecha, campana, tipo)');
+        }
+      }
     })().catch(error => { promesaTablaMarketingGastos = null; throw error; });
   }
   return promesaTablaMarketingGastos;
 }
+
+const TIPOS_GASTO_VALIDOS = ['ventas', 'reclutamiento'];
 
 router.get('/marketing-gastos', auth(['jefatura', 'marketing']), async (req, res) => {
   try {
     await asegurarTablaMarketingGastos();
     const desde = String(req.query.desde || '').trim();
     const hasta = String(req.query.hasta || '').trim();
+    const tipo = TIPOS_GASTO_VALIDOS.includes(req.query.tipo) ? req.query.tipo : 'ventas';
     const errores = validar([
       errorFecha(desde || undefined, 'desde'),
       errorFecha(hasta || undefined, 'hasta'),
@@ -2305,11 +2323,11 @@ router.get('/marketing-gastos', auth(['jefatura', 'marketing']), async (req, res
     if (errores) return res.status(400).json({ ok: false, mensaje: errores[0] });
     if (desde && hasta && desde > hasta)
       return res.status(400).json({ ok: false, mensaje: 'La fecha Desde no puede ser posterior a Hasta' });
-    const condiciones = [];
-    const params = [];
+    const condiciones = ['tipo = ?'];
+    const params = [tipo];
     if (desde) { condiciones.push('fecha >= ?'); params.push(desde); }
     if (hasta) { condiciones.push('fecha <= ?'); params.push(hasta); }
-    const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
+    const where = `WHERE ${condiciones.join(' AND ')}`;
     const [data] = await db.query(
       `SELECT id, fecha, campana, monto, notas, registrado_por_nombre
          FROM marketing_gastos ${where}
@@ -2331,6 +2349,7 @@ router.post('/marketing-gastos', auth(['jefatura', 'marketing']), async (req, re
     const campana = String(req.body?.campana || '').trim();
     const notas = String(req.body?.notas || '').trim();
     const monto = Number(req.body?.monto);
+    const tipo = TIPOS_GASTO_VALIDOS.includes(req.body?.tipo) ? req.body.tipo : 'ventas';
     const errores = validar([
       errorFecha(fecha, 'fecha'),
       errorTexto(campana, 'campana', { requerido: true, max: 100 }),
@@ -2340,11 +2359,11 @@ router.post('/marketing-gastos', auth(['jefatura', 'marketing']), async (req, re
     if (!Number.isFinite(monto) || monto <= 0)
       return res.status(400).json({ ok: false, mensaje: 'El monto debe ser un número mayor a 0' });
     await db.query(
-      `INSERT INTO marketing_gastos (fecha, campana, monto, notas, registrado_por_id, registrado_por_nombre)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO marketing_gastos (fecha, campana, tipo, monto, notas, registrado_por_id, registrado_por_nombre)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE monto = VALUES(monto), notas = VALUES(notas),
          registrado_por_id = VALUES(registrado_por_id), registrado_por_nombre = VALUES(registrado_por_nombre)`,
-      [fecha, campana, monto, notas || null, req.user.id, req.user.nombre || req.user.usuario || 'Jefatura']
+      [fecha, campana, tipo, monto, notas || null, req.user.id, req.user.nombre || req.user.usuario || 'Jefatura']
     );
     res.json({ ok: true });
   } catch (e) {
