@@ -333,6 +333,24 @@ async function nombreUsuario(id) {
   return rows[0]?.nombre || 'Usuario Back Data';
 }
 
+function esCargaAutomaticaPrizma(usuario) {
+  return ['sistema-prizma', 'sistema_prizma'].includes(String(usuario || '').trim().toLowerCase());
+}
+
+async function obtenerResponsablesBackActivos() {
+  const [rows] = await db.query(`
+    SELECT id, nombre, usuario
+    FROM usuarios
+    WHERE cargo = 'backoffice' AND activo = 1
+    ORDER BY id
+  `);
+  return rows;
+}
+
+function elegirAleatorio(items) {
+  return items.length ? items[Math.floor(Math.random() * items.length)] : null;
+}
+
 // GET /api/leads
 router.get('/', auth(ROLES_ALL), async (req, res) => {
   try {
@@ -459,8 +477,39 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     // Segunda query: datos de ventas para todos los teléfonos en un solo round-trip.
     // Reemplaza las 3 subqueries correlacionadas que antes se ejecutaban una vez por fila.
     let ventaMap = new Map(); // TRIM(telefono1) -> { venta_asesor_id, venta_asesor_nombre }
+    const sinCoberturaPorNumero = new Map();
+    const sinCoberturaPorUsuario = new Map();
     if (data.length > 0) {
       const phones = [...new Set(data.map(l => (l.n1 || '').trim()).filter(Boolean))];
+      const usuariosWhatsapp = [...new Set(data
+        .map(l => normalizarUsuarioWhatsapp(l.usuario_whatsapp).toLowerCase())
+        .filter(Boolean))];
+      if (phones.length > 0 || usuariosWhatsapp.length > 0) {
+        const condicionesCobertura = [];
+        const paramsCobertura = [];
+        if (phones.length > 0) {
+          condicionesCobertura.push(`TRIM(n1) IN (${phones.map(() => '?').join(',')})`);
+          paramsCobertura.push(...phones);
+        }
+        if (usuariosWhatsapp.length > 0) {
+          condicionesCobertura.push(`LOWER(TRIM(REPLACE(usuario_whatsapp,'@',''))) IN (${usuariosWhatsapp.map(() => '?').join(',')})`);
+          paramsCobertura.push(...usuariosWhatsapp);
+        }
+        const [antecedentesCobertura] = await db.query(
+          `SELECT id, n1, usuario_whatsapp, distrito_sin_cobertura, coordenadas_sin_cobertura
+             FROM leads
+            WHERE UPPER(TRIM(COALESCE(tipif_vend,'')))='SIN COBERTURA'
+              AND (${condicionesCobertura.join(' OR ')})
+            ORDER BY id DESC`,
+          paramsCobertura
+        );
+        for (const antecedente of antecedentesCobertura) {
+          const numero = normalizarN1(antecedente.n1);
+          const usuario = normalizarUsuarioWhatsapp(antecedente.usuario_whatsapp).toLowerCase();
+          if (numero && !sinCoberturaPorNumero.has(numero)) sinCoberturaPorNumero.set(numero, antecedente);
+          if (usuario && !sinCoberturaPorUsuario.has(usuario)) sinCoberturaPorUsuario.set(usuario, antecedente);
+        }
+      }
       if (phones.length > 0) {
         const placeholders = phones.map(() => '?').join(',');
         const [ventas] = await db.query(
@@ -515,6 +564,14 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       const rotacionesReales = Number(resumenDia?.rotaciones || contarRotacionesHistorial(historial));
       const esPrincipalDia = Number(resumenDia?.id) === Number(l.id);
       const tipifPersistida = normalizarTipifVendLegacy(l.tipif_vend);
+      const antecedenteSinCobertura = sinCoberturaPorNumero.get(normalizarN1(l.n1))
+        || sinCoberturaPorUsuario.get(normalizarUsuarioWhatsapp(l.usuario_whatsapp).toLowerCase())
+        || null;
+      const alertaSinCobertura = Boolean(
+        antecedenteSinCobertura
+        && Number(antecedenteSinCobertura.id) !== Number(l.id)
+        && String(tipifPersistida || '').trim().toUpperCase() !== 'SIN COBERTURA'
+      );
       const tipifVisible = esPrincipalDia && String(tipifPersistida).toUpperCase() === 'NO ROTAR'
         ? (ultimaTipificacionVendedorHistorial(historial) || tipifPersistida)
         : tipifPersistida;
@@ -584,6 +641,9 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         tipif_interna_area: cicloAbiertoParaAsesor ? '' : (tipifInterna?.area || ''),
         tipif_interna_fecha: cicloAbiertoParaAsesor ? '' : (tipifInterna?.fecha || ''),
         tipif_interna_motivo: cicloAbiertoParaAsesor ? '' : (tipifInterna?.motivo || ''),
+        alerta_sin_cobertura: alertaSinCobertura ? 1 : 0,
+        alerta_sin_cobertura_distrito: alertaSinCobertura ? (antecedenteSinCobertura.distrito_sin_cobertura || '') : '',
+        alerta_sin_cobertura_coordenadas: alertaSinCobertura ? (antecedenteSinCobertura.coordenadas_sin_cobertura || '') : '',
         ...(ventaCerrada ? { asesor_id: ventaAsesorId, asesor_nombre: ventaAsesorNombre || l.asesor_nombre, sin_asignar:0, tipif_vend:'VENTA CERRADA' } : {}),
         obs_asesor: obsAsesor,
         obs_asesor_personal: obsAsesorPersonal,
@@ -1034,6 +1094,8 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     const fechasUsadas = [];
     const omitidosN1 = [];
     const bloqueadosTerna = [];
+    const cargaAutomaticaPrizma = esCargaAutomaticaPrizma(req.user.usuario);
+    const responsablesBack = cargaAutomaticaPrizma ? await obtenerResponsablesBackActivos() : [];
 
     // Validar todas las fechas antes de insertar para evitar lotes parciales.
     for (const l of leads) {
@@ -1110,10 +1172,21 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       const enBlacklist = await huboTernaAlgunaVez(db, n1Normalizado);
       const bloquearRotacion = !enBlacklist && Boolean(await idLeadMasAntiguoDelDia(db, n1Normalizado, fechaLead));
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
-      const nombreCargador = await nombreUsuario(req.user.id);
+      const responsableBack = elegirAleatorio(responsablesBack);
+      const autorCarga = responsableBack || {
+        id: req.user.id,
+        nombre: await nombreUsuario(req.user.id),
+        usuario: req.user.usuario || '',
+      };
+      const nombreCargador = autorCarga.nombre;
+      const datosOrigenAutomatico = cargaAutomaticaPrizma ? {
+        origenCarga: 'Sistema Prizma',
+        origenUsuario: req.user.usuario || 'sistema-prizma',
+        asignacionAutomatica: true,
+      } : {};
       const historial  = asesorId
-        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaLead, asignadoPor: nombreCargador, cargadoPor: nombreCargador, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1 }])
-        : JSON.stringify([{ tipo: 'CARGA', cargadoPor: nombreCargador, hora: horaPeruAhora(), fecha: fechaLead, motivo: 'Carga inicial' }]);
+        ? JSON.stringify([{ asesor: asesorNombre, hora: horaFinal, fecha: fechaLead, asignadoPor: nombreCargador, cargadoPor: nombreCargador, cargadoPorUsuario: autorCarga.usuario, motivo: 'Asignacion inicial', obsBackPersonal:obsBackInicial, tipifBackOriginal:tipifBackInicial, tipifBackSlot:1, ...datosOrigenAutomatico }])
+        : JSON.stringify([{ tipo: 'CARGA', cargadoPor: nombreCargador, cargadoPorUsuario: autorCarga.usuario, hora: horaPeruAhora(), fecha: fechaLead, motivo: cargaAutomaticaPrizma ? 'Carga automatica Prizma' : 'Carga inicial', ...datosOrigenAutomatico }]);
 
       const tipifBack = tipifBackInicial;
       const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
@@ -1126,7 +1199,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         l.tipo_contacto||'LLAMADA', l.direccion||'', l.coordenadas||'', l.obs_back||'', tipifBack,
         registraAutor ? req.user.id : null, derivadoPorNombre,
         asesorId, asesorNombre, fechaLead, horaFinal, asesorId?0:1, historial, asesorId?1:0,
-        req.user.id, nombreCargador, req.user.usuario || '', req.ip || req.socket?.remoteAddress || ''
+        autorCarga.id, nombreCargador, autorCarga.usuario, req.ip || req.socket?.remoteAddress || ''
       ]);
       ids.push(result.insertId);
       if (enBlacklist) {
@@ -1179,7 +1252,22 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
     if (n2 !== undefined && String(n2 || '').trim() && !n2Normalizado) {
       return res.status(400).json({ ok: false, mensaje: 'N2 debe contener entre 7 y 9 dígitos' });
     }
-    if (n1Normalizado !== undefined) {
+    const [actuales] = await db.query(
+      `SELECT id, n1, usuario_whatsapp FROM leads WHERE id=? LIMIT 1`,
+      [req.params.id]
+    );
+    if (!actuales.length) {
+      return res.status(404).json({ ok: false, mensaje: 'Lead no encontrado' });
+    }
+    const n1ActualNormalizado = normalizarN1(actuales[0].n1);
+    const esVinculacionWhatsapp = !n1ActualNormalizado
+      && Boolean(normalizarUsuarioWhatsapp(actuales[0].usuario_whatsapp));
+    // Al editar solamente el número de referencia (N2), el frontend también
+    // envía el N1 actual. No debe bloquearse por otros ciclos/registros que ya
+    // compartían legítimamente ese N1; la duplicidad se valida solo al cambiarlo.
+    if (n1Normalizado !== undefined
+      && n1Normalizado !== n1ActualNormalizado
+      && !esVinculacionWhatsapp) {
       const [duplicados] = await db.query(
         `SELECT otro.id FROM leads actual
          INNER JOIN leads otro ON otro.fecha = actual.fecha AND otro.n1 = ? AND otro.id <> actual.id
