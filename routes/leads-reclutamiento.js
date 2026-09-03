@@ -601,9 +601,10 @@ router.get('/capacitaciones', auth(ROLES_CAPACITACION), async (req, res) => {
       SELECT c.id, c.nombre_postulante, c.numero, c.fecha_inicio_capacitacion, c.fecha_inicio_capacitador,
              c.creado_por_nombre, c.created_at, c.historial, c.fecha_alta,
              c.dia1_tipif, c.dia2_tipif, c.dia3_tipif, c.dia4_tipif, c.dia5_tipif, c.sala, c.tipificacion_final,
-             l.campana
+             l.campana, e.creado_por_nombre AS agendado_por_nombre
         FROM reclutamiento_capacitaciones c
         LEFT JOIN leads_reclutamiento l ON l.id = c.lead_id
+        LEFT JOIN reclutamiento_entrevistas e ON e.id = c.entrevista_id
        ORDER BY c.fecha_inicio_capacitacion DESC, c.id DESC
     `);
     res.json({ ok: true, data: data.map(c => ({
