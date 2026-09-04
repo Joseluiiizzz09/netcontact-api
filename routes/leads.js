@@ -1253,7 +1253,7 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
       return res.status(400).json({ ok: false, mensaje: 'N2 debe contener entre 7 y 9 dígitos' });
     }
     const [actuales] = await db.query(
-      `SELECT id, n1, usuario_whatsapp FROM leads WHERE id=? LIMIT 1`,
+      `SELECT id, n1, usuario_whatsapp, historial FROM leads WHERE id=? LIMIT 1`,
       [req.params.id]
     );
     if (!actuales.length) {
@@ -1289,6 +1289,23 @@ router.patch('/:id/datos-back', auth(ROLES_BO), async (req, res) => {
     if (n1Normalizado !== undefined) { campos.push('n1=?');            valores.push(n1Normalizado); }
     if (n2Normalizado !== undefined) { campos.push('n2=?');            valores.push(n2Normalizado || null); }
     if (campana       !== undefined) { campos.push('campana=?');       valores.push(normalizarCampana(campana) || '—'); }
+
+    // El asesor titular ve obs_back a traves del snapshot "obsBackPersonal" que
+    // quedo guardado en su asignacion vigente del historial (para no heredar la
+    // nota de un asesor anterior tras una rotacion). Si Back Office edita
+    // obs_back mientras el lead ya esta asignado, ese snapshot queda desactualizado
+    // y la nota nueva nunca llega al asesor: hay que sincronizarlo aqui tambien.
+    if (obs_back !== undefined) {
+      const historialActual = historialArray(actuales[0].historial);
+      const vigentes = asignacionesVigentesHistorial(historialActual);
+      const ultimaVigente = vigentes[vigentes.length - 1];
+      if (ultimaVigente) {
+        const idx = historialActual.lastIndexOf(ultimaVigente);
+        historialActual[idx] = { ...ultimaVigente, obsBackPersonal: obs_back || '' };
+        campos.push('historial=?');
+        valores.push(JSON.stringify(historialActual));
+      }
+    }
     if (!campos.length) return res.status(400).json({ ok: false, mensaje: 'No hay datos para actualizar' });
 
     valores.push(req.params.id);
