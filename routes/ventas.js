@@ -2339,6 +2339,16 @@ router.get('/:id/historial', auth(['jefatura']), async (req, res) => {
 // ===== GET /api/ventas/:id/fotos =====
 router.get('/:id/fotos', auth(ROLES_VENTAS), async (req, res) => {
   try {
+    // Mismo control de propiedad que ya exigia el POST: sin esto, cualquier
+    // asesor autenticado podia enumerar ventas ajenas (id secuencial) y leer
+    // la ruta real de documentos/fotos de clientes que no le pertenecen.
+    if (req.user.cargo === 'asesor') {
+      const [rows] = await db.query(`SELECT asesor_id FROM ventas WHERE id = ?`, [req.params.id]);
+      if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Venta no encontrada' });
+      if (rows[0].asesor_id !== req.user.id) {
+        return res.status(403).json({ ok: false, mensaje: 'No puedes ver fotos de ventas de otros asesores' });
+      }
+    }
     const [fotos] = await db.query(`SELECT * FROM venta_fotos WHERE venta_id = ? ORDER BY created_at ASC`, [req.params.id]);
     res.json({ ok: true, data: fotos });
   } catch(e) {

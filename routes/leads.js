@@ -493,12 +493,6 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       params.push(fecha, `%"fecha":"${fecha}%`);
     }
     sql += ` ORDER BY l.created_at DESC`;
-    // Red de seguridad: una consulta sin fecha, sin busqueda y sin asesor
-    // acotaria literalmente toda la tabla de un golpe (36k+ filas y creciendo).
-    // El uso normal siempre llega con alguno de esos filtros; esto solo actua
-    // sobre el caso de "buscar en todas las fechas" sin ningun criterio.
-    const sinAcotar = !fecha && !desde && !hasta && !busquedaRaw && !visorAsesorId;
-    if (sinAcotar) sql += ` LIMIT 5000`;
 
     const [data] = await db.query(sql, params);
 
