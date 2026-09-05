@@ -7,6 +7,11 @@ const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 const db      = require('../database');
 
+// Hash señuelo para comparar contra usuarios que no existen: sin esto, un
+// usuario inexistente responde de inmediato mientras que uno real siempre
+// corre bcrypt (~100ms), permitiendo enumerar usuarios validos por timing.
+const HASH_SEÑUELO = '$2a$10$CwTycUXWue0Thq9StjUM0uJ8Xo8ph8oT2CpV6UEwbBAM0LqNjSGXG';
+
 router.post('/login', async (req, res) => {
   try {
     const { usuario, password } = req.body;
@@ -18,7 +23,10 @@ router.post('/login', async (req, res) => {
       FROM usuarios WHERE usuario = ?
     `, [usuario.trim().toLowerCase()]);
 
-    if (!rows.length) return res.status(401).json({ ok: false, mensaje: 'Usuario o contraseña incorrectos' });
+    if (!rows.length) {
+      bcrypt.compareSync(password, HASH_SEÑUELO);
+      return res.status(401).json({ ok: false, mensaje: 'Usuario o contraseña incorrectos' });
+    }
     const u = rows[0];
     if (!u.activo) return res.status(403).json({ ok: false, mensaje: 'Cuenta desactivada. Contacta a jefatura.' });
 

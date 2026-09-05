@@ -1094,7 +1094,7 @@ router.post('/import-legacy', auth(ROLES_BO), async (req, res) => {
   } catch (e) {
     try { await conn.rollback(); } catch(re) { /* ignore */ }
     console.error('[import-legacy] Error general, rollback aplicado:', e.message);
-    res.status(500).json({ ok: false, mensaje: 'Error en la importación masiva. Rollback aplicado.', detalle: e.message });
+    res.status(500).json({ ok: false, mensaje: 'Error en la importación masiva. Rollback aplicado.' });
   } finally {
     conn.release();
   }
