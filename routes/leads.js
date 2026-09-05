@@ -372,6 +372,44 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     const numeroBusqueda = busquedaRaw.replace(/\D/g, '').slice(0, 20);
     const esBusquedaNumerica = /^[\d\s()+.\-]+$/.test(busquedaRaw);
 
+    // Resolver primero si esta consulta esta acotada a UN asesor (su propia
+    // base, o Jefatura viendo la base de un asesor puntual) para poder decidir
+    // "este lead ya tiene venta propia/ajena" con un JOIN agregado una sola vez
+    // en vez de 2 subconsultas EXISTS/NOT EXISTS correlacionadas por cada lead
+    // (con TRIM() en ambos lados, lo que impedia usar cualquier indice). Ese
+    // patron era, medido en performance_schema, el mayor consumo de tiempo de
+    // BD de todo el sistema: ~230k ejecuciones acumuladas, ~2.5s y >1M filas
+    // examinadas por llamada en promedio — causa directa de la saturacion de
+    // CPU y de los reinicios por out-of-memory del backend.
+    let visorAsesorId = null;
+    let visorAsesorNombre = '';
+    if (cargoEfectivo === 'asesor') {
+      // Base del asesor: leads asignados AHORA a él + los que trabajó antes
+      // (su nombre aparece en el historial). Así un número no desaparece de su
+      // base al ser rotado a otro asesor; conserva su registro de lo trabajado.
+      const [uNom] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
+      visorAsesorId = req.user.id;
+      visorAsesorNombre = uNom[0]?.nombre || '';
+    } else if (asesor_id) {
+      const [uNom] = await db.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [asesor_id]);
+      // Jefatura también puede abrir la vista de un usuario de Back Data. Ese
+      // usuario administra la base completa y no debe tratarse como asesor
+      // asignado, porque hacerlo deja la jornada artificialmente en cero.
+      if (String(uNom[0]?.cargo || '').trim().toLowerCase() === 'asesor') {
+        visorAsesorId = Number(asesor_id);
+        visorAsesorNombre = uNom[0]?.nombre || '';
+      }
+    }
+
+    // Sin ningun filtro que acote la consulta, esto devuelve la tabla `leads`
+    // completa (decenas de miles de filas con su `historial`) en una sola
+    // respuesta — se vio en producción una llamada asi devolviendo 7MB en un
+    // solo request y tumbando el proceso por out-of-memory. Se exige al menos
+    // un criterio real en vez de permitir la descarga completa de la base.
+    if (!visorAsesorId && !fecha && !desde && !hasta && !busquedaRaw) {
+      return res.status(400).json({ ok: false, mensaje: 'Indica una fecha, un rango de fechas o un criterio de búsqueda para consultar los leads.' });
+    }
+
     // Los contadores se agregan una sola vez y luego se enlazan. Antes eran
     // cinco subconsultas correlacionadas por cada lead (decenas de miles de
     // ejecuciones por petición), principal causa de saturación en hora pico.
@@ -393,11 +431,20 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
         SELECT TRIM(telefono1) AS telefono1, COUNT(*) AS ventas_registradas
         FROM ventas WHERE telefono1 IS NOT NULL AND TRIM(telefono1)<>''
         GROUP BY TRIM(telefono1)
-      ) vx ON vx.telefono1 = TRIM(l.n1)
-      WHERE 1=1`;
+      ) vx ON vx.telefono1 = TRIM(l.n1)`;
     const params = [];
-    let visorAsesorId = null;
-    let visorAsesorNombre = '';
+    if (visorAsesorId) {
+      // Mismo patron que `vx`: agrega una sola vez, ya filtrado por el asesor
+      // (indice por asesor_id), si el numero tiene alguna venta propia —
+      // reemplaza el EXISTS(...AND v.asesor_id=?) correlacionado de mas abajo.
+      sql += ` LEFT JOIN (
+        SELECT TRIM(telefono1) AS telefono1
+        FROM ventas WHERE asesor_id = ? AND telefono1 IS NOT NULL AND TRIM(telefono1)<>''
+        GROUP BY TRIM(telefono1)
+      ) vxa ON vxa.telefono1 = TRIM(l.n1)`;
+      params.push(visorAsesorId);
+    }
+    sql += ` WHERE 1=1`;
     // Las instancias técnicas representan formularios independientes para el
     // asesor; Back Data conserva una sola fila para el cliente principal.
     if (cargoEfectivo !== 'asesor' && !asesor_id) sql += ` AND l.lead_origen_id IS NULL`;
@@ -419,45 +466,20 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
     if (desde) { sql += ` AND l.fecha >= ?`; params.push(desde); }
     if (hasta) { sql += ` AND l.fecha <= ?`; params.push(hasta); }
 
-    if (cargoEfectivo === 'asesor') {
-      // Base del asesor: leads asignados AHORA a él + los que trabajó antes
-      // (su nombre aparece en el historial). Así un número no desaparece de su
-      // base al ser rotado a otro asesor; conserva su registro de lo trabajado.
-      const [uNom] = await db.query(`SELECT nombre FROM usuarios WHERE id = ? LIMIT 1`, [req.user.id]);
-      const nom = uNom[0]?.nombre || '';
-      visorAsesorId = req.user.id;
-      visorAsesorNombre = nom;
+    if (visorAsesorId) {
       // El nombre debe figurar como ASESOR titular de alguna asignación ("asesor":"nom"),
       // no como asesorAnterior/rotadoPor. Así, al quitar su asignación desaparece de su base.
       sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%\"asesor\":\"', ?, '\"%'))`;
-      params.push(req.user.id, nom);
+      params.push(visorAsesorId, visorAsesorNombre);
       // Si el número ya produjo una venta, queda visible para quien la registró
       // o para el titular actual. Esto permite que una VENTA CAIDA rotada llegue
       // como NUEVO al vendedor que debe intentar cerrarla nuevamente.
       sql += ` AND (
         l.asesor_id = ?
-        OR NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
-        OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
+        OR COALESCE(vx.ventas_registradas, 0) = 0
+        OR vxa.telefono1 IS NOT NULL
       )`;
-      params.push(req.user.id, req.user.id);
-    } else if (asesor_id) {
-      const [uNom] = await db.query(`SELECT nombre, cargo FROM usuarios WHERE id = ? LIMIT 1`, [asesor_id]);
-      const nom = uNom[0]?.nombre || '';
-      // Jefatura también puede abrir la vista de un usuario de Back Data. Ese
-      // usuario administra la base completa y no debe tratarse como asesor
-      // asignado, porque hacerlo deja la jornada artificialmente en cero.
-      if (String(uNom[0]?.cargo || '').trim().toLowerCase() === 'asesor') {
-        visorAsesorId = Number(asesor_id);
-        visorAsesorNombre = nom;
-        sql += ` AND (l.asesor_id = ? OR l.historial LIKE CONCAT('%"asesor":"', ?, '"%'))`;
-        params.push(asesor_id, nom);
-        sql += ` AND (
-          l.asesor_id = ?
-          OR NOT EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1))
-          OR EXISTS (SELECT 1 FROM ventas v WHERE TRIM(v.telefono1) = TRIM(l.n1) AND v.asesor_id = ?)
-        )`;
-        params.push(asesor_id, asesor_id);
-      }
+      params.push(visorAsesorId);
     }
 
     // Sin visor de asesor la fecha representa la base original. Para la base
