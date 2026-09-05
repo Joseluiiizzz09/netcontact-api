@@ -227,7 +227,7 @@ async function existeTipificadoOtraCampana(conn, n1, fecha, campana, excluirId =
   const [rows] = await conn.query(`
     SELECT id, fecha, tipif_vend, historial
     FROM leads
-    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+    WHERE n1_normalizado = ?
       AND fecha = ?
       ${excluirSql}
   `, params);
@@ -246,7 +246,7 @@ async function existeLeadMismoDiaMismaCampana(conn, n1, fecha, campana, excluirI
   if (excluirId) { excluirSql = ' AND id <> ?'; params.push(excluirId); }
   const [rows] = await conn.query(`
     SELECT id FROM leads
-    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+    WHERE n1_normalizado = ?
       AND fecha = ?
       AND campana = ?
       ${excluirSql}
@@ -260,7 +260,7 @@ async function idLeadMasAntiguoDelDia(conn, n1, fecha) {
   if (!numero || !fecha) return null;
   const [rows] = await conn.query(`
     SELECT id FROM leads
-    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+    WHERE n1_normalizado = ?
       AND fecha = ?
     ORDER BY created_at ASC, id ASC
     LIMIT 1
@@ -276,7 +276,7 @@ async function huboTernaAlgunaVez(conn, n1) {
   if (!numero) return false;
   const [rows] = await conn.query(`
     SELECT id FROM leads
-    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+    WHERE n1_normalizado = ?
       AND UPPER(TRIM(tipif_vend)) = 'TERNA'
     LIMIT 1
   `, [numero]);
@@ -301,7 +301,7 @@ async function bloquearOtrasCampanasDelDia(conn, lead) {
     UPDATE leads
     SET tipif_vend = 'NO ROTAR', tipif_hora = ?
     WHERE id <> ?
-      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+      AND n1_normalizado = ?
       AND fecha = ?
       AND UPPER(TRIM(COALESCE(tipif_vend,''))) NOT IN ('VENTA CERRADA','NO TOCAR','SH NO TOCAR','NO ROTAR','SH NO ROTAR')
       AND (? IS NULL OR created_at > ?)
@@ -322,7 +322,7 @@ async function bloquearDuplicadosAlRotar(conn, lead) {
   await conn.query(`
     UPDATE leads SET tipif_vend='NO ROTAR', tipif_hora=?
     WHERE id<>?
-      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '')=?
+      AND n1_normalizado=?
       AND fecha=?
       AND UPPER(TRIM(COALESCE(tipif_vend,''))) NOT IN ('VENTA CERRADA','NO TOCAR','SH NO TOCAR','NO ROTAR','SH NO ROTAR')
   `, [horaPeruAhora(), principalId || lead.id, n1, fecha]);
@@ -471,6 +471,12 @@ router.get('/', auth(ROLES_ALL), async (req, res) => {
       params.push(fecha, `%"fecha":"${fecha}%`);
     }
     sql += ` ORDER BY l.created_at DESC`;
+    // Red de seguridad: una consulta sin fecha, sin busqueda y sin asesor
+    // acotaria literalmente toda la tabla de un golpe (36k+ filas y creciendo).
+    // El uso normal siempre llega con alguno de esos filtros; esto solo actua
+    // sobre el caso de "buscar en todas las fechas" sin ningun criterio.
+    const sinAcotar = !fecha && !desde && !hasta && !busquedaRaw && !visorAsesorId;
+    if (sinAcotar) sql += ` LIMIT 5000`;
 
     const [data] = await db.query(sql, params);
 
@@ -1096,6 +1102,10 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
     const bloqueadosTerna = [];
     const cargaAutomaticaPrizma = esCargaAutomaticaPrizma(req.user.usuario);
     const responsablesBack = cargaAutomaticaPrizma ? await obtenerResponsablesBackActivos() : [];
+    // Se resuelve una sola vez: es siempre el mismo usuario autenticado en
+    // todas las iteraciones del lote (antes se repetia la misma consulta por
+    // cada lead sin responsable aleatorio).
+    const nombreUsuarioActual = await nombreUsuario(req.user.id);
 
     // Validar todas las fechas antes de insertar para evitar lotes parciales.
     for (const l of leads) {
@@ -1117,6 +1127,75 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       }
     }
 
+    // --- Pre-carga en bloque para evitar N+1 ----------------------------------
+    // Antes, cada lead del lote disparaba hasta 3 consultas propias (duplicado
+    // del dia, blacklist TERNA, mas antiguo del dia) mas la resolucion de
+    // asesor por nombre/id — con lotes de hasta 500 leads eso eran miles de
+    // consultas secuenciales, varias de ellas forzando ademas un escaneo
+    // completo (ver n1_normalizado). Ahora se resuelven con un puñado de
+    // consultas para todo el lote y se consultan en memoria dentro del for.
+    // Los mapas de duplicado/mas-antiguo se van completando a medida que se
+    // insertan filas, para seguir detectando duplicados repetidos dentro del
+    // mismo lote (antes lo lograba porque cada chequeo era una consulta fresca).
+    const n1sLote = [...new Set(leads.map(l => normalizarN1(l.n1)).filter(Boolean))];
+    const fechasLote = [...new Set(leads.map(l => l.fecha || fechaHoy))];
+    const asesorIdsLote = [...new Set(leads.map(l => l.asesor_id).filter(Boolean))];
+    const asesorNombresLote = [...new Set(
+      leads.filter(l => !l.asesor_id && (l.asesor_nombre || l.asesor))
+        .map(l => String(l.asesor_nombre || l.asesor).trim().toLowerCase())
+        .filter(Boolean)
+    )];
+
+    const duplicadoMismaCampanaMap = new Map(); // `${n1}|${fecha}|${campana}` -> id
+    const ternaSet = new Set();                  // n1_normalizado con TERNA alguna vez
+    const masAntiguoDelDiaMap = new Map();       // `${n1}|${fecha}` -> id mas antiguo
+    const usuariosPorId = new Map();
+    const usuariosPorNombre = new Map();
+
+    if (n1sLote.length) {
+      const inN1 = n1sLote.map(() => '?').join(',');
+      const inFechas = fechasLote.map(() => '?').join(',');
+
+      const [dupRows] = await db.query(`
+        SELECT id, n1_normalizado, fecha, campana FROM leads
+        WHERE n1_normalizado IN (${inN1}) AND fecha IN (${inFechas})
+      `, [...n1sLote, ...fechasLote]);
+      for (const r of dupRows) {
+        const clave = `${r.n1_normalizado}|${r.fecha}|${normalizarCampana(r.campana) || '—'}`;
+        if (!duplicadoMismaCampanaMap.has(clave)) duplicadoMismaCampanaMap.set(clave, r.id);
+      }
+
+      const [antiguoRows] = await db.query(`
+        SELECT id, n1_normalizado, fecha FROM leads
+        WHERE n1_normalizado IN (${inN1}) AND fecha IN (${inFechas})
+        ORDER BY created_at ASC, id ASC
+      `, [...n1sLote, ...fechasLote]);
+      for (const r of antiguoRows) {
+        const clave = `${r.n1_normalizado}|${r.fecha}`;
+        if (!masAntiguoDelDiaMap.has(clave)) masAntiguoDelDiaMap.set(clave, r.id);
+      }
+
+      const [ternaRows] = await db.query(`
+        SELECT DISTINCT n1_normalizado FROM leads
+        WHERE n1_normalizado IN (${inN1}) AND UPPER(TRIM(tipif_vend)) = 'TERNA'
+      `, n1sLote);
+      for (const r of ternaRows) ternaSet.add(r.n1_normalizado);
+    }
+    if (asesorIdsLote.length) {
+      const [rows] = await db.query(
+        `SELECT id, nombre FROM usuarios WHERE id IN (${asesorIdsLote.map(() => '?').join(',')})`,
+        asesorIdsLote
+      );
+      for (const r of rows) usuariosPorId.set(Number(r.id), r.nombre);
+    }
+    if (asesorNombresLote.length) {
+      const [rows] = await db.query(
+        `SELECT id, nombre FROM usuarios WHERE LOWER(TRIM(nombre)) IN (${asesorNombresLote.map(() => '?').join(',')})`,
+        asesorNombresLote
+      );
+      for (const r of rows) usuariosPorNombre.set(String(r.nombre).trim().toLowerCase(), { id: r.id, nombre: r.nombre });
+    }
+
     for (const l of leads) {
       const fechaLead = l.fecha || fechaHoy;
       const n1Normalizado = normalizarN1(l.n1);
@@ -1129,7 +1208,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         const [duplicados] = await db.query(`
           SELECT id, n1, fecha
           FROM leads
-          WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+          WHERE n1_normalizado = ?
           ORDER BY created_at DESC
           LIMIT 1
         `, [n1Normalizado]);
@@ -1147,7 +1226,8 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
       // silencio, sin crear una fila nueva. Un N1 repetido en OTRA campaña
       // el mismo día no entra aquí — sigue siendo un lead independiente y
       // válido, que cuenta aparte en las métricas de esa campaña.
-      if (n1Normalizado && await existeLeadMismoDiaMismaCampana(db, n1Normalizado, fechaLead, campanaNormalizada)) {
+      const claveDuplicado = `${n1Normalizado}|${fechaLead}|${campanaNormalizada || '—'}`;
+      if (n1Normalizado && duplicadoMismaCampanaMap.has(claveDuplicado)) {
         omitidos++;
         omitidosN1.push(n1Normalizado);
         continue;
@@ -1158,24 +1238,25 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
 
       if (asesorId) {
         // El nombre se obtiene de la BD, no del body
-        const [uRows] = await db.query(`SELECT nombre FROM usuarios WHERE id = ?`, [asesorId]);
-        if (uRows.length) asesorNombre = uRows[0].nombre;
+        const nombreEncontrado = usuariosPorId.get(Number(asesorId));
+        if (nombreEncontrado) asesorNombre = nombreEncontrado;
         else asesorId = null;
       } else if (l.asesor_nombre || l.asesor) {
-        const nombreBuscar = l.asesor_nombre || l.asesor;
-        const [uRows] = await db.query(`SELECT id, nombre FROM usuarios WHERE LOWER(TRIM(nombre)) = LOWER(TRIM(?)) LIMIT 1`, [nombreBuscar]);
-        if (uRows.length) { asesorId = uRows[0].id; asesorNombre = uRows[0].nombre; }
+        const nombreBuscar = String(l.asesor_nombre || l.asesor).trim().toLowerCase();
+        const encontrado = usuariosPorNombre.get(nombreBuscar);
+        if (encontrado) { asesorId = encontrado.id; asesorNombre = encontrado.nombre; }
       }
 
       const horaFinal  = asesorId ? horaAhora : '';
       const tipifBackInicial = normalizarTipifBack(l.tipif_back);
-      const enBlacklist = await huboTernaAlgunaVez(db, n1Normalizado);
-      const bloquearRotacion = !enBlacklist && Boolean(await idLeadMasAntiguoDelDia(db, n1Normalizado, fechaLead));
+      const enBlacklist = ternaSet.has(n1Normalizado);
+      const claveAntiguo = `${n1Normalizado}|${fechaLead}`;
+      const bloquearRotacion = !enBlacklist && masAntiguoDelDiaMap.has(claveAntiguo);
       const obsBackInicial = !tipifBackInicial ? '' : (tipifBackInicial === 'DERIVADO' ? 'DERIVADO' : 'LLAMAR AHORA');
       const responsableBack = elegirAleatorio(responsablesBack);
       const autorCarga = responsableBack || {
         id: req.user.id,
-        nombre: await nombreUsuario(req.user.id),
+        nombre: nombreUsuarioActual,
         usuario: req.user.usuario || '',
       };
       const nombreCargador = autorCarga.nombre;
@@ -1190,7 +1271,7 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
 
       const tipifBack = tipifBackInicial;
       const registraAutor = tipifBack === 'DERIVADO' || tipifBack === 'LLAMANDO';
-      const derivadoPorNombre = registraAutor ? await nombreUsuario(req.user.id) : '';
+      const derivadoPorNombre = registraAutor ? nombreUsuarioActual : '';
       const [result] = await db.query(`
         INSERT INTO leads (campana, distrito, n1, n2, usuario_whatsapp, tipo_contacto, direccion, coordenadas, obs_back, tipif_back, derivado_por_id, derivado_por_nombre, asesor_id, asesor_nombre, fecha, hora_asig, sin_asignar, historial, rotaciones, creado_por_id, creado_por_nombre, creado_por_usuario, creado_desde_ip)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1202,6 +1283,10 @@ router.post('/', auth(ROLES_BO), async (req, res) => {
         autorCarga.id, nombreCargador, autorCarga.usuario, req.ip || req.socket?.remoteAddress || ''
       ]);
       ids.push(result.insertId);
+      if (n1Normalizado) {
+        if (!duplicadoMismaCampanaMap.has(claveDuplicado)) duplicadoMismaCampanaMap.set(claveDuplicado, result.insertId);
+        if (!masAntiguoDelDiaMap.has(claveAntiguo)) masAntiguoDelDiaMap.set(claveAntiguo, result.insertId);
+      }
       if (enBlacklist) {
         await db.query(`UPDATE leads SET tipif_vend='TERNA', tipif_hora=? WHERE id=?`, [horaAhora, result.insertId]);
         bloqueadosTerna.push({ id: result.insertId, n1: n1Normalizado });

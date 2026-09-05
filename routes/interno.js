@@ -31,7 +31,7 @@ router.post('/lead-prizma', verificarClaveInternaPrizma, async (req, res) => {
 
     const [existentes] = await db.query(`
       SELECT id FROM leads
-      WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1,' ',''),'-',''),'(',''),')',''),'+',''),'.','') = ?
+      WHERE n1_normalizado = ?
         AND fecha = ? AND campana = ?
       LIMIT 1
     `, [n1, fechaHoy, campana]);

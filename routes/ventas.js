@@ -297,7 +297,7 @@ async function sincronizarDocumentoConBackData(conn, venta, tipoDocNuevo, dniNue
   const documento = numeroDoc ? `${tipo}: ${numeroDoc}` : '';
   const telefonos = [...new Set([venta.telefono1, telefonoNuevo].map(v => String(v || '').replace(/\D/g, '')).filter(Boolean))];
   if (!telefonos.length) return 0;
-  const condiciones = telefonos.map(() => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1,' ',''),'-',''),'(',''),')',''),'+',''),'.','')=?`).join(' OR ');
+  const condiciones = telefonos.map(() => `n1_normalizado=?`).join(' OR ');
   const [leads] = await conn.query(`SELECT id, obs_asesor, historial FROM leads WHERE ${condiciones} FOR UPDATE`, telefonos);
   for (const lead of leads) {
     let historial = [];

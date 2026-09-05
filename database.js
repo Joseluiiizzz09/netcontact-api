@@ -447,6 +447,18 @@ async function initDB() {
         .catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
     }
 
+    // Columna generada con el mismo criterio de normalizacion que ya usaban
+    // las queries de duplicados/blacklist (REPLACE encadenado sobre n1), pero
+    // precalculada y con indice propio: antes esas queries no podian usar
+    // ningun indice porque la columna llegaba envuelta en funciones, forzando
+    // un escaneo completo de la tabla en cada llamada.
+    await conn.query(`
+      ALTER TABLE leads ADD COLUMN n1_normalizado VARCHAR(30)
+        GENERATED ALWAYS AS (
+          REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(n1, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '')
+        ) STORED
+    `).catch(err => { if (err.code !== 'ER_DUP_FIELDNAME') throw err; });
+
     // -- INDICES PARA RENDIMIENTO (150+ usuarios) --
     // MySQL 8 no admite CREATE INDEX IF NOT EXISTS. Se consulta el catálogo
     // antes de crear cada índice para que el arranque sea idempotente.
@@ -463,6 +475,7 @@ async function initDB() {
       ['idx_leads_asesor', 'leads', 'asesor_id'],
       ['idx_leads_created', 'leads', 'created_at'],
       ['idx_leads_n1', 'leads', 'n1'],
+      ['idx_leads_n1_normalizado', 'leads', 'n1_normalizado'],
       ['idx_leads_n2', 'leads', 'n2'],
       ['idx_leads_fecha_created', 'leads', 'fecha, created_at'],
       ['idx_leads_asesor_fecha_created', 'leads', 'asesor_id, fecha, created_at'],
