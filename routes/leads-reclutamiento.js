@@ -255,6 +255,27 @@ router.post('/', auth(ROLES_BACK), async (req, res) => {
         continue;
       }
 
+      // Sin este chequeo, un numero que ya existe (de otra fecha/campana) puede
+      // volver a darse de alta como candidato nuevo sin ningun aviso: dos
+      // personas terminan trabajando el mismo numero en dos filas distintas,
+      // pisandose la asignacion y la tipificacion una a la otra. REGEXP_REPLACE
+      // compara solo digitos para no fallar por espacios/guiones en registros
+      // antiguos que se guardaron sin normalizar.
+      if (n1Normalizado && !l.importacion_legacy) {
+        const [dupRows] = await db.query(
+          "SELECT id, campana, asesor_nombre, fecha FROM leads_reclutamiento WHERE REGEXP_REPLACE(n1, '[^0-9]', '') = ? LIMIT 1",
+          [n1Normalizado]
+        );
+        if (dupRows.length) {
+          const dup = dupRows[0];
+          const asesorTxt = dup.asesor_nombre ? ('asesor ' + dup.asesor_nombre) : 'sin asesor';
+          const mensajeError = 'Este número ya existe (candidato #' + dup.id + ', campaña ' + (dup.campana || 'sin campaña') + ', ' + asesorTxt + ', ' + dup.fecha + '). Trabaja ese registro en vez de crear uno nuevo.';
+          if (!esLote) return res.status(400).json({ ok: false, mensaje: mensajeError });
+          omitidos++; erroresDetalle.push(mensajeError);
+          continue;
+        }
+      }
+
       const fechaLead = l.fecha || fechaHoy;
       let asesorId = null;
       let asesorNombre = '';
@@ -408,7 +429,7 @@ router.patch('/:id/datos-back', auth(ROLES_BACK), async (req, res) => {
     if (!rows.length) return res.status(404).json({ ok: false, mensaje: 'Candidato no encontrado' });
     await db.query(`
       UPDATE leads_reclutamiento SET campana=?, n1=?, n2=?, usuario_whatsapp=? WHERE id=?
-    `, [req.body.campana||'', req.body.n1||null, req.body.n2||null, usuarioWhatsapp||null, req.params.id]);
+    `, [req.body.campana||'', n1Normalizado||null, req.body.n2||null, usuarioWhatsapp||null, req.params.id]);
     res.json({ ok: true, mensaje: 'Candidato actualizado' });
   } catch(e) {
     console.error(e);
